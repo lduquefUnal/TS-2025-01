@@ -897,5 +897,3 @@ void EXTI15_10_IRQHandler(void){
      * y así hasta el ultimo caso */
 
 }
-
-
