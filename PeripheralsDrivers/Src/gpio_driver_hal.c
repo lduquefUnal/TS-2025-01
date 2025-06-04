@@ -4,9 +4,11 @@
  *  Created on: May 22, 2025
  *      Author: luisduquefranco
  */
+#include <stm32f4xx.h>
 #include "gpio_driver_hal.h"
 #include "stm32_assert.h"
-#include "stm32_assert.h"
+
+
 
 /* ==== Headers for private functions ==== */
 static void gpio_enable_clock_peripheral(GPIO_Handler_t *pGPIOHandler);

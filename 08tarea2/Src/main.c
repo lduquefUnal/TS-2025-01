@@ -2,7 +2,7 @@
  ******************************************************************************
  * @file           : main.c
  * @author         : lduquef
- * @brief          : Basic Config
+ * @brief          : tarea2
  ******************************************************************************
  * @attention
  *
@@ -15,164 +15,211 @@
  *
  ******************************************************************************
  */
-
-#include <stdio.h>
 #include <stdint.h>
-#include "stm32f4xx.h"
-#include "gpio_driver_hal.h"
+#include <stm32f4xx.h>
+
 #include "stm32_assert.h"
+#include "gpio_driver_hal.h"
 #include "exti_driver_hal.h"
 #include "timer_driver_hal.h"
 #include "sysTickDriver.h"
+#include "fsm.h"
 
-GPIO_Handler_t userLed      = {0}; // PinH1
-GPIO_Handler_t userDis1 	= {0}; // PinA0
-GPIO_Handler_t userDis2 	= {0}; // PinA1
-GPIO_Handler_t userDis3 	= {0}; // PinB0
-GPIO_Handler_t userDis4 	= {0}; // PinA4
-GPIO_Handler_t userClk 		= {0}; // PinA12
-GPIO_Handler_t userData 	= {0}; // PinC6
-GPIO_Handler_t userSw 	    = {0}; // PinC9
-GPIO_Handler_t userSegA     = {0}; // PinA10
-GPIO_Handler_t userSegB     = {0}; // PinB10
-GPIO_Handler_t userSegC     = {0}; // PinB13
-GPIO_Handler_t userSegD     = {0}; // PinC0
-GPIO_Handler_t userSegE     = {0}; // PinC1
-GPIO_Handler_t userSegF     = {0}; // PinB1
-GPIO_Handler_t userSegG     = {0}; // PinB5
+GPIO_Handler_t userLed    = {0};
+GPIO_Handler_t userDis1   = {0};
+GPIO_Handler_t userDis2   = {0};
+GPIO_Handler_t userDis3   = {0};
+GPIO_Handler_t userDis4   = {0};
+GPIO_Handler_t userClk    = {0};
+GPIO_Handler_t userData   = {0};
+GPIO_Handler_t userSw     = {0};
+GPIO_Handler_t userSegA   = {0};
+GPIO_Handler_t userSegB   = {0};
+GPIO_Handler_t userSegC   = {0};
+GPIO_Handler_t userSegD   = {0};
+GPIO_Handler_t userSegE   = {0};
+GPIO_Handler_t userSegF   = {0};
+GPIO_Handler_t userSegG   = {0};
 
-Timer_Handler_t blinkyTimer = {0}; //TIM2
-Timer_Handler_t displayTimer = {0};//TIM3
-EXTI_Config_t extiData = {0};
-EXTI_Config_t extiSw = {0};
+Timer_Handler_t blinkyTimer  = {0};
+Timer_Handler_t displayTimer = {0};
+EXTI_Config_t extiClk       = {0};
+EXTI_Config_t extiSw         = {0};
 
-uint8_t nextDigit = 0;
-uint8_t data = 0;
-uint8_t clock = 0;
-uint8_t ms_delay = 4 ;
-uint16_t estado= 0;
-volatile uint8_t encoderEventFlag = 0 ;
-volatile uint8_t swEventFlag = 0 ;
-enum{
-	unidades = 1,
-	decenas,
-	centenas,
-	miles,
-};
-
+volatile uint8_t clk_snapshot = 0;
+volatile uint8_t data_snapshot = 0;
+volatile uint8_t swEventFlag = 0;
+static e_PosiblesStates currentState;
+static uint16_t display_value;
+static uint8_t nextDigit_FSM;
+static uint8_t MS_LED = 4;
 void init_System(void);
-void displayNumber(uint8_t);
+void init_fsm(void);
+e_PosiblesStates state_machine_action(e_PosiblesEvents event);
+void displayNumber(uint8_t digitValue);
+void Timer2_Callback(void);
+void Timer3_Callback(void);
+void callback_ExtInt12(void);
+void callback_ExtInt9(void);
 
-int main(void){
+void init_fsm(void) {
+    currentState  = STATE_IDLE;
+    display_value = 0;
+    nextDigit_FSM = 1;
+}
+
+int main(void) {
     init_System();
-    displayNumber(8);
-    config_SysTick_ms(0);
-    delay_ms(20);
-    while(1){
-		gpio_WritePin(&userDis1, RESET);
-		gpio_WritePin(&userDis2, RESET);
-		gpio_WritePin(&userDis3, RESET);
-		gpio_WritePin(&userDis4, RESET);
-		gpio_WritePin(&userSegA, RESET);
-		gpio_WritePin(&userSegB, RESET);
-		gpio_WritePin(&userSegC, RESET);
-		gpio_WritePin(&userSegD, RESET);
-		gpio_WritePin(&userSegE, RESET);
-		gpio_WritePin(&userSegF, RESET);
-		gpio_WritePin(&userSegG, RESET);
+    init_fsm();
+    state_machine_action(EVENT_TIMER_TICK);
 
-		//if(swEventFlag){
-
-		//}
-		if(encoderEventFlag){
-			encoderEventFlag=0;
-			if(clock == 0){
-				if(estado==0){
-					estado = 4095;
-				}else{
-					estado--;
-				}
-			}else{
-				if(estado==4095){
-					estado = 0;
-				}else {
-					estado++;
-				}
-			}
-		}
-		switch(nextDigit){
-		case unidades: {
-			gpio_WritePin(&userDis1,SET);
-			displayNumber(estado%10);
-			delay_ms(ms_delay);
-			break;
-		}
-		}
+    while (1) {
+        state_machine_action(EVENT_NONE);
+        // Pequeño delay para evitar consumo excesivo de CPU
+        delay_ms(10);
     }
 }
 
+e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
+    switch (currentState) {
+        case STATE_IDLE:
+            if (event == EVENT_ENCODER) {
+                if (data_snapshot== 1) {
+                    display_value = (display_value == 4095) ? 0 : display_value + 1;
+                } else {
+                    display_value = (display_value == 0) ? 4095 : display_value - 1;
+                }
+                currentState = STATE_UPDATE_DISP;
+            }
+            else if (event == EVENT_TIMER_TICK) {
+                currentState = STATE_UPDATE_DISP;
+            }
+            else if (event == EVENT_SW) {
+                currentState = STATE_SW_PRESS;
+            }
+            break;
 
-void displayNumber(uint8_t estado) {
-    // Apagar todos los segmentos inicialmente
-    // Encender los segmentos necesarios según el número
-    if (estado == 0) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegE, SET);
-        gpio_WritePin(&userSegF, SET);
-    } else if (estado == 1) {
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-    } else if (estado == 2) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegE, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 3) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 4) {
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegF, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 5) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegF, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 6) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegE, SET);
-        gpio_WritePin(&userSegF, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 7) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-    } else if (estado == 8) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegD, SET);
-        gpio_WritePin(&userSegE, SET);
-        gpio_WritePin(&userSegF, SET);
-        gpio_WritePin(&userSegG, SET);
-    } else if (estado == 9) {
-        gpio_WritePin(&userSegA, SET);
-        gpio_WritePin(&userSegB, SET);
-        gpio_WritePin(&userSegC, SET);
-        gpio_WritePin(&userSegF, SET);
-        gpio_WritePin(&userSegG, SET);
+        case STATE_UPDATE_DISP:
+            gpio_WritePin(&userDis1, RESET);
+            gpio_WritePin(&userDis2, RESET);
+            gpio_WritePin(&userDis3, RESET);
+            gpio_WritePin(&userDis4, RESET);
+            switch (nextDigit_FSM) {
+                case 1:
+                    gpio_WritePin(&userDis1, SET);
+                    displayNumber(display_value % 10);
+                    break;
+                case 2:
+                    gpio_WritePin(&userDis2, SET);
+                    displayNumber((display_value / 10) % 10);
+                    break;
+                case 3:
+                    gpio_WritePin(&userDis3, SET);
+                    displayNumber((display_value / 100) % 10);
+                    break;
+                case 4:
+                    gpio_WritePin(&userDis4, SET);
+                    displayNumber((display_value / 1000) % 10);
+                    break;
+                default:
+                    nextDigit_FSM = 1;
+                    gpio_WritePin(&userDis1, SET);
+                    displayNumber(display_value % 10);
+            }
+            nextDigit_FSM = (nextDigit_FSM < 4) ? nextDigit_FSM + 1 : 1;
+            currentState = STATE_IDLE;
+            break;
+
+        case STATE_SW_PRESS:
+            display_value = 0; // reset on switch press
+            nextDigit_FSM    = 1;
+            state_machine_action(EVENT_TIMER_TICK);
+            currentState = STATE_UPDATE_DISP;
+            break;
+
+        default:
+            currentState = STATE_IDLE;
+    }
+    return currentState;
+}
+
+void displayNumber(uint8_t digitValue) {
+    gpio_WritePin(&userSegA, RESET);
+    gpio_WritePin(&userSegB, RESET);
+    gpio_WritePin(&userSegC, RESET);
+    gpio_WritePin(&userSegD, RESET);
+    gpio_WritePin(&userSegE, RESET);
+    gpio_WritePin(&userSegF, RESET);
+    gpio_WritePin(&userSegG, RESET);
+    switch (digitValue) {
+        case 0:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegE, SET);
+            gpio_WritePin(&userSegF, SET);
+            break;
+        case 1:
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            break;
+        case 2:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegE, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 3:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 4:
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegF, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 5:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegF, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 6:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegE, SET);
+            gpio_WritePin(&userSegF, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 7:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            break;
+        case 8:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegD, SET);
+            gpio_WritePin(&userSegE, SET);
+            gpio_WritePin(&userSegF, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
+        case 9:
+            gpio_WritePin(&userSegA, SET);
+            gpio_WritePin(&userSegB, SET);
+            gpio_WritePin(&userSegC, SET);
+            gpio_WritePin(&userSegF, SET);
+            gpio_WritePin(&userSegG, SET);
+            break;
     }
 }
 
@@ -276,19 +323,19 @@ void init_System(void){
 	userClk.pGPIOx							= GPIOA;
 	userClk.pinConfig.GPIO_PinNumber		= PIN_12;
 	userClk.pinConfig.GPIO_PinMode			= GPIO_MODE_IN;
-	userClk.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_NOTHING;
+	userClk.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_PULLDOWN;
 	gpio_Config(&userClk);
 
 	userData.pGPIOx							= GPIOC;
-	userData.pinConfig.GPIO_PinNumber		= PIN_6;
+	userData.pinConfig.GPIO_PinNumber		= PIN_8;
 	userData.pinConfig.GPIO_PinMode			= GPIO_MODE_IN;
-	userData.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_NOTHING;
+	userData.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_PULLDOWN;
 	gpio_Config(&userData);
 
 	userSw.pGPIOx							= GPIOC;
 	userSw.pinConfig.GPIO_PinNumber		    = PIN_9;
 	userSw.pinConfig.GPIO_PinMode			= GPIO_MODE_IN;
-	userSw.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_NOTHING;
+	userSw.pinConfig.GPIO_PinPuPdControl	= GPIO_PUPDR_PULLUP;
 	gpio_Config(&userSw);
 
 	config_SysTick_ms(0);
@@ -304,41 +351,41 @@ void init_System(void){
 	displayTimer.pTIMx								= TIM3;
 	displayTimer.TIMx_Config.TIMx_mode				= TIMER_UP_COUNTER;
 	displayTimer.TIMx_Config.TIMx_Prescaler  		= 16000; //1ms conversion
-	displayTimer.TIMx_Config.TIMx_Period			= ms_delay;
+	displayTimer.TIMx_Config.TIMx_Period			= MS_LED;
 	displayTimer.TIMx_Config.TIMx_InterruptEnable 	= TIMER_INT_ENABLE;
 	timer_Config(&displayTimer);
 	timer_SetState(&displayTimer, TIMER_ON);
 
-	extiData.pGPIOHandler					= &userData;
-	extiData.edgeType						= EXTERNAL_INTERRUPT_RISING_EDGE;
-	exti_Config(&extiData);
+	extiClk.pGPIOHandler					= &userClk;
+	extiClk.edgeType						= EXTERNAL_INTERRUPT_RISING_EDGE;
+	exti_Config(&extiClk);
 
 	extiSw.pGPIOHandler					= &userSw;
-	extiSw.edgeType						= EXTERNAL_INTERRUPT_RISING_EDGE;
+	extiSw.edgeType						= EXTERNAL_INTERRUPT_FALLING_EDGE;
 	exti_Config(&extiSw);
 
 	gpio_WritePin(&userLed, SET);
 
 }
-// callbacks  llamadas fuera del bucle
-void Timer2_Callback(void){
-	gpio_TogglePin(&userLed);
-}
-void Timer3_Callback(void){
-	nextDigit++;
+
+void Timer2_Callback(void) {
+    gpio_TogglePin(&userLed);
 }
 
-void callback_ExtInt12(void){
-	encoderEventFlag =1 ;
+void Timer3_Callback(void) {
+    state_machine_action(EVENT_TIMER_TICK);
+
+void callback_ExtInt12(void) {
+    data_snapshot = gpio_ReadPin(&userData);
+    state_machine_action(EVENT_ENCODER);
 }
 
-void callback_ExtInte9(void){
-	swEventFlag = 1 ;
+void callback_ExtInt9(void) {
+    state_machine_action(EVENT_SW);
 }
 
-void assert_failed(uint8_t* file, uint32_t line){
-	while(1){
-		//Problems
-	}
+void assert_failed(uint8_t* file, uint32_t line) {
+    while (1) {
+    	}
+    }
 }
-

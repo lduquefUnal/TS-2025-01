@@ -8,8 +8,7 @@
 #ifndef INC_TIMER_DRIVER_HAL_H_
 #define INC_TIMER_DRIVER_HAL_H_
 
-#include "stm32f4xx.h"
-
+#include <stm32f4xx.h>
 enum
 {
 	TIMER_INT_DISABLE = 0,

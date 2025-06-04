@@ -3,6 +3,8 @@
 	<name>08tarea2</name>
 	<comment></comment>
 	<projects>
+		<project>PeripheralsDrivers</project>
+		<project>08tarea2</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>
