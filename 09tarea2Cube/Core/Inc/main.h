@@ -85,10 +85,12 @@ void Error_Handler(void);
 #define userData_GPIO_Port GPIOC
 #define userSw_Pin GPIO_PIN_9
 #define userSw_GPIO_Port GPIOC
+#define userSw_EXTI_IRQn EXTI9_5_IRQn
 #define segA_Pin GPIO_PIN_10
 #define segA_GPIO_Port GPIOA
 #define userClk_Pin GPIO_PIN_12
 #define userClk_GPIO_Port GPIOA
+#define userClk_EXTI_IRQn EXTI15_10_IRQn
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14
