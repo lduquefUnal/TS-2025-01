@@ -4568,7 +4568,7 @@ HAL_StatusTypeDef HAL_TIM_DMABurst_MultiWriteStart(TIM_HandleTypeDef *htim, uint
   {
     case TIM_DMA_UPDATE:
     {
-      /* Set the DMA Period elapsed callbacks */
+      /* Set the DMA d elapsed callbacks */
       htim->hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = TIM_DMAPeriodElapsedCplt;
       htim->hdma[TIM_DMA_ID_UPDATE]->XferHalfCpltCallback = TIM_DMAPeriodElapsedHalfCplt;
 

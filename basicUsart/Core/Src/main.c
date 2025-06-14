@@ -18,7 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include "string.h"
+#include "stdio.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -54,7 +55,9 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-
+uint8_t bufferMsg = {0};
+uint8_t arraySize = 0;
+uint8_t stringLength = 0 ;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -94,11 +97,16 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  sprintf((char *)bufferMsg,"Hola mundo!\n");
+  arraySize=sizeof(bufferMsg);
+  stringLength = strlen(bufferMsg);
+  HAL_UART_Transmit(&huart2,stringLength,13,1000);
+  __NOP();
   while (1)
   {
     /* USER CODE END WHILE */

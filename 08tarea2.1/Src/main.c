@@ -46,99 +46,73 @@ Timer_Handler_t displayTimer = {0};
 EXTI_Config_t extiClk       = {0};
 EXTI_Config_t extiSw         = {0};
 
-volatile uint8_t clk_snapshot = 0;
 volatile uint8_t data_snapshot = 0;
-volatile uint8_t swEventFlag = 0;
-static e_PosiblesStates currentState;
-static uint16_t display_value;
-static uint8_t nextDigit_FSM;
-static uint8_t MS_LED = 3;
+volatile e_PosiblesEvents pending_event=IDLE;
+static uint16_t display_value=0;
+static uint8_t nextDigit_FSM = 1;
+static uint8_t MS_LED = 5;
+
+
 void init_System(void);
-void init_fsm(void);
-e_PosiblesStates state_machine_action(e_PosiblesEvents event);
 void displayNumber(uint8_t digitValue);
 void Timer2_Callback(void);
 void Timer3_Callback(void);
 void callback_ExtInt12(void);
 void callback_ExtInt9(void);
 
-void init_fsm(void) {
-    currentState  = STATE_IDLE;
-    display_value = 0;
-    nextDigit_FSM = 1;
-}
 
 int main(void) {
     init_System();
-    init_fsm();
-    state_machine_action(EVENT_TIMER_TICK);
 
     while (1) {
-
+    	if (pending_event != IDLE){
+    	state_machine_action(pending_event);
+    	pending_event = IDLE;
+    	}
     }
 }
 
 e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
-    switch (currentState) {
-        case STATE_IDLE:
-            if (event == EVENT_ENCODER) {
-                if (data_snapshot== 1) {
-
+    switch (event) {
+    	case EVENT_ENCODER:
+                if (data_snapshot== 1)
                     display_value = (display_value == 0) ? 4095 : display_value - 1;
-                } else {
+                else
                 	display_value = (display_value == 4095) ? 0 : display_value + 1;
-                }
-                currentState = STATE_UPDATE_DISP;
-            }
-            else if (event == EVENT_TIMER_TICK) {
-                currentState = STATE_UPDATE_DISP;
-            }
-            else if (event == EVENT_SW) {
-                currentState = STATE_SW_PRESS;
-            }
+                break;
+    	case EVENT_SW:
+    		display_value = 0; // reset on switch press
+			nextDigit_FSM    = 1;
             break;
-
-        case STATE_UPDATE_DISP:
-            gpio_WritePin(&userDis1, RESET);
-            gpio_WritePin(&userDis2, RESET);
-            gpio_WritePin(&userDis3, RESET);
-            gpio_WritePin(&userDis4, RESET);
-            switch (nextDigit_FSM) {
-                case 1:
-                    gpio_WritePin(&userDis1, SET);
-                    displayNumber(display_value % 10);
-                    break;
-                case 2:
-                    gpio_WritePin(&userDis2, SET);
-                    displayNumber((display_value / 10) % 10);
-                    break;
-                case 3:
-                    gpio_WritePin(&userDis3, SET);
-                    displayNumber((display_value / 100) % 10);
-                    break;
-                case 4:
-                    gpio_WritePin(&userDis4, SET);
-                    displayNumber((display_value / 1000) % 10);
-                    break;
-                default:
-                    nextDigit_FSM = 1;
-                    gpio_WritePin(&userDis1, SET);
-                    displayNumber(display_value % 10);
-            }
-            nextDigit_FSM = (nextDigit_FSM < 4) ? nextDigit_FSM + 1 : 1;
-            currentState = STATE_IDLE;
+    	case EVENT_TIMER_TICK:
+    		gpio_WritePin(&userDis1, RESET);
+			gpio_WritePin(&userDis2, RESET);
+			gpio_WritePin(&userDis3, RESET);
+			gpio_WritePin(&userDis4, RESET);
+			switch (nextDigit_FSM) {
+				case 1:
+					gpio_WritePin(&userDis1, SET);
+					displayNumber(display_value % 10);
+					break;
+				case 2:
+					gpio_WritePin(&userDis2, SET);
+					displayNumber((display_value / 10) % 10);
+					break;
+				case 3:
+					gpio_WritePin(&userDis3, SET);
+					displayNumber((display_value / 100) % 10);
+					break;
+				case 4:
+					gpio_WritePin(&userDis4, SET);
+					displayNumber((display_value / 1000) % 10);
+					break;
+			}
+			nextDigit_FSM = (nextDigit_FSM < 4) ? nextDigit_FSM + 1 : 1;
             break;
-
-        case STATE_SW_PRESS:
-            display_value = 0; // reset on switch press
-            nextDigit_FSM    = 1;
-            currentState = STATE_UPDATE_DISP;
-            break;
-
-        default:
-            currentState = STATE_IDLE;
+			default:
+				nextDigit_FSM = 1;
     }
-    return currentState;
+    return event;
 }
 
 void displayNumber(uint8_t digitValue) {
@@ -363,7 +337,6 @@ void init_System(void){
 	exti_Config(&extiSw);
 
 	gpio_WritePin(&userLed, SET);
-
 }
 
 void Timer2_Callback(void) {
@@ -371,21 +344,21 @@ void Timer2_Callback(void) {
 }
 
 void Timer3_Callback(void) {
-    state_machine_action(EVENT_TIMER_TICK);
+	pending_event=EVENT_TIMER_TICK;
+
 }
 void callback_ExtInt12(void) {
     data_snapshot = gpio_ReadPin(&userData);
-    clk_snapshot = gpio_ReadPin(&userClk);
-    state_machine_action(EVENT_ENCODER);
+    pending_event = EVENT_ENCODER;
+
 }
 
 void callback_ExtInt9(void) {
-	swEventFlag = gpio_ReadPin(&userSw);
-    state_machine_action(EVENT_SW);
+	pending_event = EVENT_SW;
 }
 
 void assert_failed(uint8_t* file, uint32_t line) {
     while (1) {
-    	};
+    	}
 }
 
