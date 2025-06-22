@@ -56,12 +56,11 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+uint8_t contador = 0;
 uint8_t bufferMsg[128] = {0};
-uint8_t arraySize = 0;
-uint8_t stringLength = 0 ;
-uint8_t contador = 0 ;
 uint8_t rx_buffer[100];
 uint8_t rx_index = 0;
+uint8_t rx_char = 0;
 volatile uint8_t usart_flag = 0 ;
 /* USER CODE END PFP */
 
@@ -103,27 +102,31 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim2);
-  HAL_UART_Receive_IT(&huart2,rx_buffer,12);
+  HAL_UART_Receive_IT(&huart2,&rx_char,1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
-  sprintf((char *)bufferMsg,"Prueba de sonido %u!! '\n'");
+  sprintf((char *)bufferMsg,"Prueba de sonido %u!! '\n'",contador);
   HAL_UART_Transmit(&huart2,bufferMsg,strlen((char *)bufferMsg),1000);
   __NOP();
   while (1)
   {
     /* USER CODE END WHILE */
 	  if (usart_flag) {
-	        if (strncmp((char *)rx_buffer, "print@", 7) == 0) {
-	        	sprintf((char *)bufferMsg,"Mensaje de prueba recibido: print@\n");
-	        	HAL_UART_Transmit(&huart2,bufferMsg,strlen((char *)bufferMsg),1000);
-	        }
+		  sprintf((char *)bufferMsg,"Comando recibido %s\n",rx_buffer);
+		  HAL_UART_Transmit(&huart2,bufferMsg,strlen((char * )bufferMsg),1000);
+	      if (strncmp((char*)rx_buffer,"led=",4)==0){
+	    	  int nuevo_delay = atoi((char*)&rx_buffer[4]);
+	    	  __HAL_TIM_SET_AUTORELOAD(&htim2,nuevo_delay);
+	          __HAL_TIM_SET_COUNTER(&htim2, 0);
+	      }
+	      // 4. ¡Limpio el buffer para el próximo comando!
+	      memset(rx_buffer,0,sizeof(rx_buffer));
 
-	        // Reiniciar la bandera y el índice para esperar otro comando
-	        usart_flag = 0;
-	        rx_index = 0;
+	      // 5. Bajo la bandera y sigo
+	      usart_flag = 0;
 	      }
 
     /* USER CODE BEGIN 3 */
@@ -245,7 +248,7 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
-  HAL_UART_Receive_IT(&huart2,rx_buffer,1);
+
   /* USER CODE END USART2_Init 2 */
 
 }
@@ -288,21 +291,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 }
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	if (huart->Instance == USART2) {
-		HAL_UART_Receive_IT(&huart2,bufferMsg,12);
 	    // Si se recibe un byte, lo añadimos al buffer
 	    if (rx_index < sizeof(rx_buffer) - 1) {
-	      rx_buffer[rx_index++] = rx_buffer[0];  // Guardar el byte recibido
+	      rx_buffer[rx_index++] = rx_char;  // Guardar el byte recibido
 	    }
 
 	    // Si se recibe el carácter '@', significa que el comando está completo
-	    if (rx_buffer[rx_index - 1] == '@') {
-	      // Activar la bandera de recepción
-	      usart_flag = 1;
+	    if (rx_char == '@') {
+            usart_flag = 1;            // Marcar comando completo
+            rx_buffer[rx_index] = '\0';// Cerrar string
+            rx_index = 0;              // Preparar índice para el siguiente comando
 	    }
-
-	    // Re-activar la recepción en interrupción para el próximo byte
-	    HAL_UART_Receive_IT(huart, &rx_buffer[rx_index], 1);
-	  }
+	    HAL_UART_Receive_IT(huart, &rx_char, 1);
+	    }
 }
 /* USER CODE END 4 */
 
