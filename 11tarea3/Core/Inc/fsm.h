@@ -14,7 +14,8 @@ typedef enum {
     EVENT_ENCODER,
     EVENT_TIMER_TICK,
     EVENT_SW,
-	EVENT_USART
+	EVENT_USART,
+	EVENT_IC_CAPTURE
 } e_PosiblesEvents;
 
 void init_fsm(void);
