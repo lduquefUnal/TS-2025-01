@@ -25,6 +25,8 @@
 #include "stdint.h"
 #include "stdio.h"
 #include "string.h"
+#include <stdlib.h>
+#include "arm_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,18 +45,29 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
+DMA_HandleTypeDef hdma_tim3_ch2;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+#define FFT_SIZE_MAX 2048
+static uint16_t adc_buffer[FFT_SIZE_MAX];
+static uint16_t fft_size = 1024;
 static uint16_t display_value   =  0;
 static uint8_t nextDigit_FSM    =  1;
-static uint8_t tx_buffer[100]   = {0};
-uint8_t rx_buffer[100] = {0};
-uint8_t rx_char =  0;
+static uint8_t tx_buffer[256]   = {0};
+#define FREQ_BUFFER_SIZE 16
+float freq_buffer[FREQ_BUFFER_SIZE] = {0};
+uint8_t freq_index = 0;
+uint8_t freq_full = 0;
+char rx_buffer[100] = {0};
+uint8_t rx_char = 0;
 uint8_t rx_index=0;
 volatile e_PosiblesEvents pending_event = IDLE;
 volatile uint8_t data_snapshot = 0;
@@ -69,13 +82,25 @@ volatile uint32_t counterOverflow  = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void displayNumber(uint8_t digitValue);
+uint8_t SetSampleFreq_TIM3(uint32_t fs);
 
+void HandleLEDDelayCmd(const char *arg);
+void HandleSampleFreqCmd(const char *arg);
+void HandleRGBCmd(const char *arg);
+void HandlePWMFreqCmd(const char *arg);
+void HandleUnknownCmd(void);
+void HandleFFTSizeCmd(const char *arg);
+void HandleStatusCmd(void);
+void HandlePrintADC(void);
+void HandleFreqDisplayCmd(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -85,7 +110,7 @@ e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
     	case IDLE:
     		break;
         case EVENT_ENCODER:
-            if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_8))  // DATA snapshot
+            if (data_snapshot)  // DATA snapshot
                 display_value = (display_value == 0) ? 4095 : display_value - 1;
             else
                 display_value = (display_value == 4095) ? 0 : display_value + 1;
@@ -123,80 +148,39 @@ e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
             }
             nextDigit_FSM = (nextDigit_FSM < 4) ? nextDigit_FSM + 1 : 1;
             break;}
-    case EVENT_USART:{
-    	sprintf((char *)tx_buffer,"Comando recibido %s\n",rx_buffer);
-		  HAL_UART_Transmit(&huart2,tx_buffer,strlen((char * )tx_buffer),1000);
-		  if (strncmp((char*)rx_buffer,"led=",4)==0){
-			  int nuevo_delay = atoi((char*)&rx_buffer[4]);
-			  __HAL_TIM_SET_AUTORELOAD(&htim2,nuevo_delay);
-			  __HAL_TIM_SET_COUNTER(&htim2, 0);
-		  }
-		  else if (strncmp((char*)rx_buffer,"freq=",5)==0){
-			  // Extraer la frecuencia deseada
-			  uint32_t fs = atoi((char*)&rx_buffer[5]);  // 44100, 48000, 96000, 128000
+        case EVENT_USART: {
+            // eco
+            int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+                               "Comando recibido: %s\r\n", rx_buffer);
+            HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
 
-			  // Calcular ARR con PSC = 0
-			  // Suponiendo timer_clk = 16 MHz
-			  uint32_t timer_clk = 16000000;
-			  uint32_t arr = timer_clk / fs - 1;
+            // dispatch
+            if      (strncmp((char*)rx_buffer,"led=",4)==0)     HandleLEDDelayCmd(rx_buffer+4);
+            else if (strncmp((char*)rx_buffer,"freq=",5)==0)    HandleSampleFreqCmd(rx_buffer+5);
+            else if (strncmp((char*)rx_buffer,"rgb=",4)==0)     HandleRGBCmd(rx_buffer+4);
+            else if (strncmp((char*)rx_buffer,"fft=",4)==0) HandleFFTSizeCmd(rx_buffer+4);
+            else if (strncmp((char*)rx_buffer,"status@",7)==0) HandleStatusCmd();
+            else if (strncmp((char*)rx_buffer,"print@",6)==0) HandlePrintADC();
+            else if (strncmp((char*)rx_buffer,"freq@",5)==0) HandleFreqDisplayCmd();
+            else if (strncmp((char*)rx_buffer,"fft@",4)==0) HandlePrintFFT();
+            else if (strncmp((char*)rx_buffer,"info@",5)==0) HandleFFTInfo();
+            else if (strncmp((char*)rx_buffer,"help@",5)==0) HandleHelpCmd();
+            else                                                ;
 
-			  // Limitar a valores válidos del profesor
-			  if (fs!=44100 && fs!=48000 && fs!=96000 && fs!=128000) {
-				  snprintf((char*)tx_buffer, sizeof(tx_buffer),
-						   "Freq no válida. Usar 44100,48000,96000,128000\r\n");
-			  } else {
-				  // Ajustar TIM4
-				  __HAL_TIM_SET_PRESCALER(&htim4, 0);
-				  __HAL_TIM_SET_AUTORELOAD(&htim4, arr);
-				  __HAL_TIM_SET_COUNTER(&htim4, 0);
-				  // Reiniciar timer base para que tome el nuevo ARR
-				  HAL_TIM_Base_Stop(&htim4);
-				  HAL_TIM_Base_Start(&htim4);
-
-				  snprintf((char*)tx_buffer, sizeof(tx_buffer),
-						   "Muestreo: %lu Hz → PSC=0, ARR=%lu\r\n",
-						   fs, (unsigned long)arr);
-			  }
-
-			HAL_UART_Transmit(&huart2,tx_buffer,strlen((char * )tx_buffer),1000);
-		  }
-		  else if (strncmp((char*)rx_buffer, "led=", 4) == 0) {
-		      char *param = (char*)&rx_buffer[4];  // todo lo que viene tras "led="
-
-		      // Determinar cada color
-		      GPIO_PinState R = (strchr(param, 'R') != NULL) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-		      GPIO_PinState G = (strchr(param, 'G') != NULL) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-		      GPIO_PinState B = (strchr(param, 'B') != NULL) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-		      // Si viene “OFF” (o ningún carácter válido), todo queda en RESET
-
-		      // Aplicar a los pines
-		      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, R);
-		      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, G);
-		      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, B);
-
-		      // Feedback por USART
-		      int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
-		          "RGB -> R:%c G:%c B:%c\r\n",
-		          (R==GPIO_PIN_SET?'1':'0'),
-		          (G==GPIO_PIN_SET?'1':'0'),
-		          (B==GPIO_PIN_SET?'1':'0'));
-		      HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
-		  }
-		  //  ¡Limpiar el buffer para el próximo comando!
-		  memset(rx_buffer,0,sizeof(rx_buffer));
-		  break;
-    }
+            memset(rx_buffer,0,sizeof(rx_buffer));
+            break;
+        }
     case EVENT_IC_CAPTURE:{
-    	float periodo_ms   = elapsedTicks;        // 1 tick = 1 ms si PSC=16000-1
-		float frecuencia_hz = 1000.0f / periodo_ms;
+    	float periodo_ms = elapsedTicks * (1.0f / 84000000.0f) * 1000.0f;  // En ms
+		float frecuencia_hz = 84000000.0f / elapsedTicks;
 		// Ejemplo: enviar por serial
-		char msg[64];
-		int len = snprintf(msg, sizeof(msg),
-			"Freq IC: %.2f Hz\r\n", frecuencia_hz);
-		HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+	    freq_buffer[freq_index++] = frecuencia_hz;
+	    if (freq_index >= FREQ_BUFFER_SIZE) {
+	        freq_index = 0;
+	        freq_full = 1;
     }break;
     }return event;
-}
+}}
 
 void displayNumber(uint8_t digitValue) {
     // Apagar todos los segmentos
@@ -279,7 +263,220 @@ void displayNumber(uint8_t digitValue) {
             break;
     }
 }
+void HandleLEDDelayCmd(const char *arg) {
+    uint32_t nuevo = atoi(arg);
+    // Ajusta TIM2 para el blinky
+    __HAL_TIM_SET_AUTORELOAD(&htim2, nuevo);
+    __HAL_TIM_SET_COUNTER(&htim2, 0);
+    // Feedback
+    int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+                       "LED delay = %lu ms\r\n", (unsigned long)nuevo);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
+}
 
+void HandleSampleFreqCmd(const char *arg) {
+    uint32_t fs = atoi(arg);
+    const uint32_t timer_clk = 84000000UL;
+    // validar
+    if (fs!=44100 && fs!=48000 && fs!=96000 && fs!=128000) {
+        const char *msg = "Use 44100,48000,96000 o 128000\r\n";
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 1000);
+        return;
+    }
+    // calcular ARR y PSC
+    uint32_t arr = timer_clk / fs - 1;
+    uint32_t psc = 0;
+    if (arr > 0xFFFF) {
+        // escalar PSC si supera 16 bits
+        psc = (arr / 0x10000) + 1;
+        arr = (timer_clk / (psc+1) / fs) - 1;
+    }
+    // aplicar a TIM3 y reiniciar
+    __HAL_TIM_SET_PRESCALER(&htim3, psc);
+    __HAL_TIM_SET_AUTORELOAD(&htim3, arr);
+    __HAL_TIM_SET_COUNTER(&htim3, 0);
+    HAL_TIM_Base_Stop(&htim3);
+    HAL_TIM_Base_Start(&htim3);
+    // Feedback
+    int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+                       "Sample TIM3 @ %lu Hz (PSC=%lu, ARR=%lu)\r\n",
+                       (unsigned long)fs, (unsigned long)psc, (unsigned long)arr);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
+}
+
+void HandleRGBCmd(const char *arg) {
+    // R, G, B si aparecen en arg
+    GPIO_PinState R = (strchr(arg,'R') ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    GPIO_PinState G = (strchr(arg,'G') ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    GPIO_PinState B = (strchr(arg,'B') ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, R);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, G);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, B);
+    // Feedback
+    int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+                       "RGB -> R:%c G:%c B:%c\r\n",
+                       R==GPIO_PIN_SET?'1':'0',
+                       G==GPIO_PIN_SET?'1':'0',
+                       B==GPIO_PIN_SET?'1':'0');
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
+}
+
+void HandleFFTSizeCmd(const char *arg) {
+    uint16_t val = atoi(arg);
+    if (val != 1024 && val != 2048) {
+        const char *msg = "FFT size must be 1024 or 2048\r\n";
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 1000);
+        return;
+    }
+    fft_size = val;
+
+    // reiniciar DMA con nuevo tamaño
+    HAL_ADC_Stop_DMA(&hadc1);
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, fft_size);
+
+    int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+                       "FFT size set to %u\r\n", fft_size );
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
+}
+void HandleStatusCmd(void) {
+    uint32_t psc = htim3.Init.Prescaler;
+    uint32_t arr = htim3.Init.Period;
+    float fs = 84000000.0f / ((psc + 1) * (arr + 1));
+    float bin_res = fs / fft_size;
+
+    int len = snprintf((char*)tx_buffer, sizeof(tx_buffer),
+        "Config:\r\nSample TIM3 @ %.2f Hz (PSC=%lu, ARR=%lu)\r\nFFT size: %u\r\nResolucion espectral: %.2f Hz/bin\r\nCanal ADC: 6\r\nTrigger ADC: TIM3_TRGO\r\n",
+        fs, (unsigned long)psc, (unsigned long)arr, fft_size, bin_res);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 1000);
+}
+void HandlePrintADC(void) {
+    char msg[64];
+    int len = snprintf(msg, sizeof(msg), "ADC[%u]:\r\n", fft_size);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+
+    for (int i = 0; i < fft_size; i++) {
+        len = snprintf(msg, sizeof(msg), "%u\r\n", adc_buffer[i]);
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+    }
+
+    const char* end = "--- end ---\r\n";
+    HAL_UART_Transmit(&huart2, (uint8_t*)end, strlen(end), 100);
+}
+void HandleFreqDisplayCmd(void) {
+    char msg[64];
+    float suma = 0.0f;
+    int count = freq_full ? FREQ_BUFFER_SIZE : freq_index;
+
+    HAL_UART_Transmit(&huart2, (uint8_t*)"Frecuencias IC (Hz):\r\n", 24, 100);
+
+    for (int i = 0; i < count; i++) {
+    	int idx = (freq_index + i) % FREQ_BUFFER_SIZE;
+        suma += freq_buffer[idx];
+        int len = snprintf(msg, sizeof(msg), "%.2f\r\n", freq_buffer[idx]);
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+    }
+
+    float promedio = (count > 0) ? suma / count : 0.0f;
+    int len = snprintf(msg, sizeof(msg), "Promedio: %.2f Hz\r\n", promedio);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+}
+void HandlePrintFFT(void) {
+    float input_f32[FFT_SIZE_MAX];
+    float output_fft[FFT_SIZE_MAX];
+
+    for (int i = 0; i < fft_size; i++) {
+        input_f32[i] = (float)adc_buffer[i] - 2048.0f;
+    }
+
+    arm_rfft_fast_instance_f32 S;
+    arm_rfft_fast_init_f32(&S, fft_size);
+    arm_rfft_fast_f32(&S, input_f32, output_fft, 0);
+
+    float fs = 84000000.0f / ((htim3.Init.Prescaler + 1) * (htim3.Init.Period + 1));
+    float bin_res = fs / fft_size;
+
+    char msg[64];
+    HAL_UART_Transmit(&huart2, (uint8_t*)"FFT Magnitudes (Hz, dB):\r\n", 27, 100);
+
+    for (int i = 1; i < fft_size / 2; i++) {  // ignorar bin 0 (DC)
+        float real = output_fft[2 * i];
+        float imag = output_fft[2 * i + 1];
+        float mag = sqrtf(real * real + imag * imag);
+        float db = 20.0f * log10f(mag + 1e-6f); // evitar log(0)
+        float freq = i * bin_res;
+        int len = snprintf(msg, sizeof(msg), "%.1f Hz: %.2f dB\r\n", freq, db);
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+    }
+
+    HAL_UART_Transmit(&huart2, (uint8_t*)"--- end ---\r\n", 13, 100);
+}
+
+void HandleFFTInfo(void) {
+    float input_f32[FFT_SIZE_MAX];
+    float output_fft[FFT_SIZE_MAX];
+    float mag_fft[FFT_SIZE_MAX / 2];
+
+    for (int i = 0; i < fft_size; i++) {
+        input_f32[i] = (float)adc_buffer[i] - 2048.0f;
+    }
+
+    arm_rfft_fast_instance_f32 S;
+    arm_rfft_fast_init_f32(&S, fft_size);
+    arm_rfft_fast_f32(&S, input_f32, output_fft, 0);
+
+    for (int i = 0; i < fft_size / 2; i++) {
+        float real = output_fft[2 * i];
+        float imag = output_fft[2 * i + 1];
+        mag_fft[i] = sqrtf(real * real + imag * imag);
+    }
+
+    uint32_t max_index = 0;
+    float max_val = 0.0f;
+    arm_max_f32(&mag_fft[1], (fft_size / 2) - 1, &max_val, &max_index);
+    max_index += 1; // porque empezamos en bin 1
+
+    float fs = 84000000.0f / ((htim3.Init.Prescaler + 1) * (htim3.Init.Period + 1));
+    float freq_bin = fs / fft_size;
+    float freq_detected = freq_bin * max_index;
+
+    float sum = 0.0f, sum_sq = 0.0f;
+    for (int i = 0; i < fft_size; i++) {
+        float x = (float)adc_buffer[i];
+        sum += x;
+    }
+    float offset = sum / fft_size;
+    for (int i = 0; i < fft_size; i++) {
+        float x = (float)adc_buffer[i] - offset;
+        sum_sq += x * x;
+    }
+    float rms = sqrtf(sum_sq / fft_size);
+
+    float db_val = 20.0f * log10f(max_val + 1e-6f);
+
+    char msg[160];
+    int len = snprintf(msg, sizeof(msg),
+        "Info de FFT:\r\nFrecuencia dominante: %.2f Hz\r\nMagnitud: %.2f dB\r\nOffset: %.2f niveles ADC\r\nRMS: %.2f niveles ADC\r\n",
+        freq_detected, db_val, offset, rms);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, 100);
+}
+void HandleHelpCmd(void) {
+    const char *help_msg =
+        "\r\n========== AYUDA =========="
+        "\r\nComandos disponibles:\r\n"
+        "  led=<ms>       - Cambia la frecuencia del LED Blinky\r\n"
+        "  freq=<Hz>      - Frecuencia de muestreo del ADC\r\n"
+        "                 -  Use 44100,48000,96000 o 128000 \r\n"
+        "  rgb=<RGB>      - Control de LED RGB, ej: rgb=RG\r\n"
+        "  fft=<size>     - Tama\xC3\xB1o FFT: 1024 o 2048\r\n"
+        "  status@        - Mostrar configuraci\xC3\xB3n actual\r\n"
+        "  print@         - Imprimir datos crudos del ADC\r\n"
+        "  fft@           - Imprimir espectro FFT\r\n"
+        "  info@          - Frecuencia dominante, magnitud y offset\r\n"
+        "  freq@          - Historial de frecuencia medida por IC\r\n"
+        "  help@          - Mostrar esta ayuda\r\n"
+        "===========================\r\n";
+    HAL_UART_Transmit(&huart2, (uint8_t*)help_msg, strlen(help_msg), 1000);
+}
 /* USER CODE END 0 */
 
 /**
@@ -311,14 +508,22 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
-  MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_ADC1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim2);
   HAL_TIM_Base_Start_IT(&htim3);
+  HAL_TIM_Base_Start_IT(&htim4);
   HAL_UART_Receive_IT(&huart2,&rx_char,1);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, fft_size);
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
+  HandleSampleFreqCmd("96000");
+  HandleFFTSizeCmd("1024");
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -356,7 +561,12 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -366,15 +576,67 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -396,9 +658,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 16000-1;
+  htim2.Init.Prescaler = 42000-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 250-1;
+  htim2.Init.Period = 500;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -436,16 +698,17 @@ static void MX_TIM3_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
 
   /* USER CODE BEGIN TIM3_Init 1 */
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 16000-1;
+  htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 500-1;
+  htim3.Init.Period = 65535;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
   {
     Error_Handler();
@@ -455,14 +718,26 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  if (HAL_TIM_IC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 8;
+  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM3_Init 2 */
-
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
   /* USER CODE END TIM3_Init 2 */
 
 }
@@ -481,15 +756,14 @@ static void MX_TIM4_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
 
   /* USER CODE BEGIN TIM4_Init 1 */
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  htim4.Init.Prescaler = 840-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 65535;
+  htim4.Init.Period = 200-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -501,26 +775,14 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_IC_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM4_Init 2 */
-HAL_TIM_IC_Start_IT(&htim4,TIM_CHANNEL_1);
+
   /* USER CODE END TIM4_Init 2 */
 
 }
@@ -555,6 +817,26 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -654,10 +936,12 @@ static void MX_GPIO_Init(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance==TIM2){
 		HAL_GPIO_TogglePin(userLed_GPIO_Port,userLed_Pin);
-	}else
-		if(htim->Instance==TIM3){
+	}else if(htim->Instance==TIM4){
 			if (pending_event == IDLE)
 			pending_event = EVENT_TIMER_TICK;
+	}else if (htim->Instance==TIM3){
+
+		counterOverflow++;
 	}
 }
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -679,26 +963,35 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 		if (rx_char == '@'){
 			rx_buffer[rx_index]='\0';
 			rx_index=0;
-			pending_event = EVENT_USART;
+			pending_event = EVENT_USART; //aquí levanta tu bandera
 		}
 		HAL_UART_Receive_IT(huart, &rx_char,1);
 	}
 }
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
-	if (htim->Instance == TIM4 && htim->Channel  == HAL_TIM_ACTIVE_CHANNEL_1){
-		if (flagCapture==1){
-			firstCapture= TIM4->CCR1;
-			counterOverflow=0;
-		}
-		if (flagCapture==2){
-			secondCapture = TIM4->CCR1;
-			elapsedTicks=secondCapture-firstCapture +(counterOverflow*65535);
-			if (pending_event==IDLE){
-				pending_event = EVENT_IC_CAPTURE;
-			}
-		}
-		flagCapture++;
-	}
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) {
+        static uint8_t ready = 0;
+
+        if (ready == 0) {
+            firstCapture = TIM3->CCR2;
+            counterOverflow = 0;
+            ready = 1;
+        } else {
+            secondCapture = TIM3->CCR2;
+
+            if (secondCapture >= firstCapture) {
+                elapsedTicks = secondCapture - firstCapture + (counterOverflow * 65536);
+            } else {
+                elapsedTicks = (0xFFFF - firstCapture + secondCapture + 1) + (counterOverflow * 65536);
+            }
+
+            if (elapsedTicks > 0 && pending_event == IDLE) {
+                pending_event = EVENT_IC_CAPTURE;
+            }
+
+            ready = 0; // volver a medir siguiente ciclo
+        }
+    }
 }
 /* USER CODE END 4 */
 
