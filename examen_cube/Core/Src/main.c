@@ -970,10 +970,10 @@ void medirTiempoEnvioUART(void) {
     uint32_t elapsed = DWT->CYCCNT - start;
     printf("Ciclos para enviar mensaje UART: %lu\n", (unsigned long)elapsed);
 }
-int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
-    return ch;
-}
+		int __io_putchar(int ch) {
+			HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+			return ch;
+		}
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance==TIM2){
 		HAL_GPIO_TogglePin(userLed_GPIO_Port,userLed_Pin);

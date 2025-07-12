@@ -31,6 +31,12 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "main.h"
+#include "string.h"
+#include "stdio.h"
+#include "math.h"
+#include "stdlib.h"
+#include "arm_math.h"
 
 /* USER CODE END Includes */
 
@@ -107,6 +113,24 @@ void Error_Handler(void);
 #define segG_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define FREQ_BUFFER_SIZE 16
+#define TX_BUFFER_SIZE 256
+#define FFT_SIZE_MAX 2048
+extern uint8_t tx_buffer[TX_BUFFER_SIZE];
+extern uint16_t adc_buffer[];
+extern uint16_t fft_size;
+extern float freq_buffer[];
+extern uint8_t freq_index;
+extern uint8_t freq_full;
+extern const uint32_t timer_clk;
+
+extern UART_HandleTypeDef huart2;
+extern ADC_HandleTypeDef hadc1;
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
+
+extern uint16_t display_value;
+extern uint8_t nextDigit_FSM;
 
 /* USER CODE END Private defines */
 
