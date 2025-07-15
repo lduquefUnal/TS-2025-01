@@ -67,7 +67,7 @@ UART_HandleTypeDef huart2;
 #define FFT_SIZE_MAX 4096
 const uint32_t timer_clk = 84000000UL;
  uint16_t adc_buffer[FFT_SIZE_MAX];
- uint16_t fft_size = 1024;
+ uint16_t fft_size = 512;
  uint8_t nextDigit_FSM    =  1;
  uint8_t tx_buffer[TX_BUFFER_SIZE] = {0};
 
@@ -187,9 +187,7 @@ int main(void)
   /* Initialize all configured peripherals */
   HAL_Delay(100);
 
-  HAL_UART_Transmit(&huart2, (uint8_t*)"Iniciando escaneo I2C simplificado...\r\n", 40, HAL_MAX_DELAY);
   I2C_Scanner();
-  HAL_UART_Transmit(&huart2, (uint8_t*)"Fin del escaneo.\r\n", 18, HAL_MAX_DELAY);
 
 
   	  MPU6050_Init();
@@ -284,7 +282,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.ClockSpeed = 400000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -547,7 +545,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
     if(huart->Instance == USART2){
 
-        HAL_UART_Transmit(&huart2, &rx_char, 1, 10);
 
         if(rx_index < sizeof(rx_buffer)-1){
             rx_buffer[rx_index++] = rx_char;

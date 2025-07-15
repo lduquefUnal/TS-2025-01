@@ -82,6 +82,7 @@ static void process_fft(void) {
     // La frecuencia de muestreo es 1kHz según tu driver MPU6050.
     float sample_rate = 1000.0f;
     fundamental_freq = (float32_t)max_index * sample_rate / (float)fft_size;
+
 }
 
 // Inicialización de la FSM
@@ -116,21 +117,28 @@ e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
                 snprintf((char*)tx_buffer, sizeof(tx_buffer),
                          "Comando recibido: %s\r\n", rx_buffer), 1000);
 
-            if      (strncmp(rx_buffer, "led=", 4) == 0)
-                Cmd_HandleLEDDelayCmd(rx_buffer + 4);
-            else if (strncmp(rx_buffer, "status", 6) == 0)
-                Cmd_HandleStatusCmd();
-            else if (strncmp(rx_buffer, "print", 5) == 0) {
-                // Enviar datos actuales de acelerómetro por UART
-                snprintf((char*)tx_buffer, sizeof(tx_buffer),
-                         "AccelX:%.2f, AccelY:%.2f, AccelZ:%.2f\r\n",
+            if (strncmp(rx_buffer, "led=", 4) == 0) {
+				Cmd_HandleLEDDelayCmd(rx_buffer + 4);
+			} else if (strncmp(rx_buffer, "status", 6) == 0) {
+				Cmd_HandleStatusCmd();
+			} else if (strncmp(rx_buffer, "print", 5) == 0) {
+				// Enviar datos actuales de acelerómetro por UART
+				snprintf((char*)tx_buffer, sizeof(tx_buffer),
+						 "AccelX:%.2f, AccelY:%.2f, AccelZ:%.2f\r\n",
 						 Ax, Ay, Az);
-                HAL_UART_Transmit(&huart2, tx_buffer, strlen((char*)tx_buffer), 1000);
-            }
+				HAL_UART_Transmit(&huart2, tx_buffer, strlen((char*)tx_buffer), 1000);
+			}
+
+			else if (strncmp(rx_buffer, "fftSize=", 8) == 0) {
+				Cmd_HandleFFTSizeCmd(rx_buffer + 8);
+			} else if (strncmp(rx_buffer, "help", 4) == 0) {
+				Cmd_HandleHelpCmd();
+			}
 
             // Limpiar el buffer de recepción
             memset(rx_buffer, 0, sizeof(rx_buffer));
-            rx_index = 0;
+                        rx_index = 0;
+                        current_state = STATE_IDLE;
                         break;
 
                     default:
