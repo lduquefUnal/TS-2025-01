@@ -16,34 +16,21 @@
 /* ============================================================================
  * === VARIABLES EXTERNAS (Necesarias para que la FSM acceda a main.c) =======
  * ============================================================================*/
-extern I2C_LCD_HandleTypeDef hlcd;
-extern UART_HandleTypeDef huart2;
-extern TIM_HandleTypeDef htim2;
+
 
 // Variables de la aplicación
 
-extern volatile e_PosiblesEvents current_event;
-extern char rx_buffer[100];
-extern uint8_t rx_index;
-extern uint8_t tx_buffer[256];
+
 
 // Variables del sistema de medición
-extern float phase_results[];
-extern float frequency_results[];
-extern volatile uint16_t num_samples_to_capture;
-extern volatile uint16_t capture_index;
+
 
 /* ============================================================================
  * === VARIABLES PRIVADAS DE LA FSM ===========================================
  * ============================================================================*/
-static volatile e_PosiblesStates current_state = STATE_IDLE;
-static uint16_t print_index = 0;
-char current_mode_str[21] = "ESPERA";
-extern volatile uint16_t adc_max_ch1;
-extern volatile uint16_t adc_max_ch2;
-float voltage_ch1 = 0.0f;
-float voltage_ch2 = 0.0f;
 
+static volatile e_PosiblesStates current_state = STATE_IDLE;
+static uint16_t print_index                  = 0;
 
 
 
@@ -156,7 +143,6 @@ static void handle_uart_command(const char *cmd) {
     }
     else {
         UART_DMA_Enqueue(&huart2, (uint8_t*)"Comando no reconocido. Usa help@\r\n", 34);
-    }
 
     }
 }

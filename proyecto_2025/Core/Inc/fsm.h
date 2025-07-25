@@ -1,34 +1,32 @@
-#ifndef FSM_H
-#define FSM_H
+/* USER CODE BEGIN Header_fsm */
+/**
+  ******************************************************************************
+  * @file           : fsm.h
+  * @brief          : Wrapper FSM - incluye main.h con las definiciones FSM
+  *                   (fsm.h queda obsoleto; todo está en main.h)
+  ******************************************************************************
+  */
+/* USER CODE END Header_fsm */
 
-#include <stdint.h>
+#ifndef __FSM_H
+#define __FSM_H
 
-typedef enum {
-    STATE_IDLE,
-    STATE_UPDATE_LCD,
-	STATE_PROCESS_FFT,
-	STATE_PROCESS_DATA
-} e_PosiblesStates;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-typedef enum {
-    EVENT_NONE,
-    EVENT_USART_COMMAND,
-	EVENT_IC_CAPTURE,
-	EVENT_FFT_BUFFER_FULL,
-	EVENT_DATA_READY ,
-	EVENT_PRINT_NEXT_DATA
-} e_PosiblesEvents;
+/* USER CODE BEGIN Includes */
+#include "main.h"
+/* USER CODE END Includes */
 
+/* USER CODE BEGIN Prototypes */
+/* Ya no hace falta declarar nada aquí:
+   init_fsm, state_machine_action y mostrar_LCD
+   están en main.h */
+/* USER CODE END Prototypes */
 
-// Funciones en fsm.c que pueden ser llamadas desde otros archivos (como main.c)
-void init_fsm(void);
-e_PosiblesStates state_machine_action(e_PosiblesEvents event);
-void mostrar_LCD(void);
+#ifdef __cplusplus
+}
+#endif
 
-// Funciones en main.c que la FSM necesita llamar
-void StartImpedanceMeasurement(uint32_t frequency);
-void PWM_SetFrequency(uint32_t freq_hz);
-extern char current_mode_str[21];
-extern arm_rfft_fast_instance_f32 fft_instance;
-extern volatile e_PosiblesEvents current_event;
-#endif // FSM_H
+#endif /* __FSM_H */

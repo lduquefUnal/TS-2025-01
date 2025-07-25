@@ -70,7 +70,7 @@ uint8_t   tx_ring[TX_BUFFER_SIZE];
 uint16_t  tx_head = 0, tx_tail = 0;
 uint8_t   tx_dma_busy = 0;
 uint16_t  tx_last_len = 0;
-
+uint32_t counterOverflow= 0;
 // ==== Muestreo / FFT ====
 volatile uint16_t num_samples_to_capture = 1024;
 volatile uint16_t capture_index        = 0;
@@ -103,10 +103,17 @@ uint8_t  rx_char    = 0;
 
 // --- FSM event ---
 volatile e_PosiblesEvents current_event = EVENT_NONE;
-
+// FSM necesita esto
+char current_mode_str[21] = {0};
 // --- FFT instance ---
 arm_rfft_fast_instance_f32 fft_instance;
 uint16_t fft_size = 512;
+char    rx_buffer[100]     = {0};
+
+uint8_t tx_buffer[TX_BUFFER_SIZE] = {0};
+
+float    phase_results[FFT_SIZE_MAX]    = {0};
+float    frequency_results[FFT_SIZE_MAX]= {0};
 
 
 /* USER CODE END PV */
@@ -824,6 +831,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+
 	if(htim->Instance==TIM2){
 		HAL_GPIO_TogglePin(userLed_GPIO_Port,userLed_Pin);
 	}else if (htim->Instance==TIM3){
