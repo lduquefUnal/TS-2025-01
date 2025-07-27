@@ -18,8 +18,10 @@
   */
 /* USER CODE END Header */
 
+/* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef __MAIN_H
 #define __MAIN_H
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,8 +46,8 @@ extern "C" {
 typedef enum {
     STATE_IDLE,
     STATE_UPDATE_LCD,
-    STATE_PROCESS_FFT,
-    STATE_PROCESS_DATA
+    STATE_PROCESS_DATA,
+    STATE_IMP_SWEEP_RUNNING,
 } e_PosiblesStates;
 
 /** FSM events */
@@ -55,7 +57,10 @@ typedef enum {
     EVENT_IC_CAPTURE,
     EVENT_FFT_BUFFER_FULL,
     EVENT_DATA_READY,
-    EVENT_PRINT_NEXT_DATA
+    EVENT_PRINT_NEXT_DATA,
+	VENT_IMP_SWEEP_DONE,
+	EVENT_IMP_SWEEP_STEP,
+	EVENT_IMP_SWEEP_START,
 } e_PosiblesEvents;
 /* USER CODE END ET */
 
@@ -68,6 +73,7 @@ typedef enum {
 #define FREQ_MIN_HZ         1.0f
 #define FREQ_MAX_HZ         2500000UL
 #define FREQ_START          1000UL
+#define UART_TIMEOUT_MS 100
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
@@ -96,27 +102,27 @@ void     LogSweep(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define userLed_Pin        GPIO_PIN_1
-#define userLed_GPIO_Port  GPIOH
-#define USART_TX_Pin       GPIO_PIN_2
+#define userLed_Pin GPIO_PIN_1
+#define userLed_GPIO_Port GPIOH
+#define USART_TX_Pin GPIO_PIN_2
 #define USART_TX_GPIO_Port GPIOA
-#define USART_RX_Pin       GPIO_PIN_3
+#define USART_RX_Pin GPIO_PIN_3
 #define USART_RX_GPIO_Port GPIOA
-#define userClk_Pin        GPIO_PIN_12
-#define userClk_GPIO_Port  GPIOA
-#define userClk_EXTI_IRQn  EXTI15_10_IRQn
-#define TMS_Pin            GPIO_PIN_13
-#define TMS_GPIO_Port      GPIOA
-#define TCK_Pin            GPIO_PIN_14
-#define TCK_GPIO_Port      GPIOA
-#define SWO_Pin            GPIO_PIN_3
-#define SWO_GPIO_Port      GPIOB
-#define FSYNC_Pin          GPIO_PIN_9
-#define FSYNC_GPIO_Port    GPIOB
+#define userClk_Pin GPIO_PIN_12
+#define userClk_GPIO_Port GPIOA
+#define userClk_EXTI_IRQn EXTI15_10_IRQn
+#define TMS_Pin GPIO_PIN_13
+#define TMS_GPIO_Port GPIOA
+#define TCK_Pin GPIO_PIN_14
+#define TCK_GPIO_Port GPIOA
+#define SWO_Pin GPIO_PIN_3
+#define SWO_GPIO_Port GPIOB
+#define FSYNC_Pin GPIO_PIN_9
+#define FSYNC_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 /* === Peripheral handles (defined in main.c) === */
-extern ADC_HandleTypeDef    hadc1;
+//extern ADC_HandleTypeDef    hadc1;
 extern DMA_HandleTypeDef    hdma_adc1;
 extern I2C_HandleTypeDef    hi2c1;
 extern SPI_HandleTypeDef    hspi1;
@@ -136,11 +142,12 @@ extern char     current_mode_str[21];
 
 /* === UART TX ring buffer === */
 extern uint8_t   tx_ring[];
-extern uint16_t  tx_head;
-extern uint16_t  tx_tail;
-extern uint8_t   tx_dma_busy;
-extern uint16_t  tx_last_len;
+extern volatile uint16_t  tx_head;
+extern volatile uint16_t  tx_tail;
+extern volatile uint8_t   tx_dma_busy;
+extern volatile uint16_t  tx_last_len;
 extern uint8_t   tx_buffer[TX_BUFFER_SIZE];
+extern char command_buffer[100] ;
 
 /* === ADC capture / FFT === */
 extern volatile uint16_t num_samples_to_capture;
@@ -162,6 +169,7 @@ extern uint32_t last_lcd_update;
 /* === Generated / measured signals === */
 extern volatile float frecuencia_generada;
 extern volatile float frecuencia_medida;
+extern volatile float fase_medida;
 
 extern volatile uint32_t period_ticks;
 extern uint16_t fft_size;
@@ -171,7 +179,9 @@ extern volatile uint32_t capture_ch1;
 extern volatile uint32_t capture_ch2;
 
 /* USER CODE END Private defines */
+
 #ifdef __cplusplus
 }
 #endif
+
 #endif /* __MAIN_H */

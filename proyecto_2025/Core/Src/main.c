@@ -47,9 +47,6 @@ I2C_LCD_HandleTypeDef hlcd;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc1;
-DMA_HandleTypeDef hdma_adc1;
-
 I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
@@ -60,16 +57,15 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
-DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 
 I2C_LCD_HandleTypeDef hlcd;
 // ==== Globals DMA-TX ====
 uint8_t   tx_ring[TX_BUFFER_SIZE];
-uint16_t  tx_head = 0, tx_tail = 0;
-uint8_t   tx_dma_busy = 0;
-uint16_t  tx_last_len = 0;
+volatile uint16_t  tx_head = 0, tx_tail = 0;
+volatile uint8_t   tx_dma_busy = 0;
+volatile uint16_t  tx_last_len = 0;
 uint32_t counterOverflow= 0;
 // ==== Muestreo / FFT ====
 volatile uint16_t num_samples_to_capture = 1024;
@@ -80,27 +76,29 @@ volatile uint8_t  is_capture_active    = 0;
 
 float     phase_results[FFT_SIZE_MAX];
 float     frequency_results[FFT_SIZE_MAX];
-
+volatile uint8_t command_ready_flag = 0;
+char command_buffer[100] = {0};
 float     freq_buffer[FREQ_BUFFER_SIZE] = {0};
 uint8_t   freq_index = 0, freq_full = 0;
 
 volatile float frecuencia_generada = 1000.0f;
-volatile float frecuencia_medida   =    0.0f;
 
 uint32_t  timer_clk       = 84000000UL;
 uint32_t  last_lcd_update = 0;
 
+// Variables temporales para recepción simple (pueden ser estáticas o globales)
+static uint8_t rx_index_simple = 0;
+static char rx_buffer_simple[100] = {0};
 // --- Input Capture ---
 volatile uint32_t capture_ch1   = 0;
 volatile uint32_t 	capture_ch2 = 0;
 volatile uint32_t period_ticks  = 0;
 volatile uint8_t  capture_flags = 0;
-
+uint32_t last_uart_activity = 0;
 // --- UART RX buffer ---
-char     rx_buffer[100];
 uint8_t rx_index   = 0;
 uint8_t  rx_char    = 0;
-
+char    rx_buffer[100]     = {0};
 // --- FSM event ---
 volatile e_PosiblesEvents current_event = EVENT_NONE;
 // FSM necesita esto
@@ -108,12 +106,15 @@ char current_mode_str[21] = {0};
 // --- FFT instance ---
 arm_rfft_fast_instance_f32 fft_instance;
 uint16_t fft_size = 512;
-char    rx_buffer[100]     = {0};
+
 
 uint8_t tx_buffer[TX_BUFFER_SIZE] = {0};
 
-float    phase_results[FFT_SIZE_MAX]    = {0};
-float    frequency_results[FFT_SIZE_MAX]= {0};
+volatile uint32_t ic_ref      = 0;
+volatile uint32_t ic_sig      = 0;
+volatile uint32_t last_ref    = 0;
+volatile uint8_t  got_ref     = 0;
+volatile uint8_t  got_sig     = 0;
 
 
 /* USER CODE END PV */
@@ -121,17 +122,15 @@ float    frequency_results[FFT_SIZE_MAX]= {0};
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_ADC1_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-	void System_Init(void);
+void System_Init(void);
 
 /* USER CODE END PFP */
 
@@ -153,24 +152,25 @@ static void MX_TIM1_Init(void);
 	    __HAL_TIM_SET_AUTORELOAD(&htim2, arr_value);
 	}
 	void StartImpedanceMeasurement(uint32_t frequency) {
-	    HAL_ADC_Stop_DMA(&hadc1);
-	    is_capture_active = 0;
-	    capture_index = 0;
+ // Detener y reiniciar timers
+	HAL_TIM_Base_Stop(&htim3);
+	HAL_TIM_IC_Stop(&htim3, TIM_CHANNEL_3);
+	HAL_TIM_IC_Stop(&htim3, TIM_CHANNEL_4);
 
-	    PWM_SetFrequency(frequency);
+	__HAL_TIM_SET_COUNTER(&htim3, 0);
+	counterOverflow = 0;
 
-	    uint32_t adc_freq = frequency * 50;
-	    ADC_Set_Sampling_Freq(adc_freq);
+	// Configurar y arrancar timers
+	PWM_SetFrequency(frequency);
+	uint32_t adc_freq = frequency * 50;
+	ADC_Set_Sampling_Freq(adc_freq);
 
-	    HAL_Delay(5);
+	HAL_Delay(5); // Pequeña pausa para estabilización
 
-	    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, num_samples_to_capture * 2) != HAL_OK)
-	    {
-	        Error_Handler();
-	    }
-
-	    // 6. Activar la medición de fase por Input Capture
-	    is_capture_active = 1;
+	// Iniciar captura
+	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3);
+	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_4);
+	is_capture_active = 1;
 	}
 	/**
 	  * @brief Ajusta la frecuencia de la señal PWM generada por TIM1.
@@ -211,20 +211,29 @@ static void MX_TIM1_Init(void);
 
 
 
-	void System_Init(void) {
-
+void System_Init(void) {
+    	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	    HAL_TIM_Base_Start_IT(&htim2);
 	    HAL_TIM_Base_Start_IT(&htim3);
-
-	    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
-	    HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
+	    HAL_TIM_Base_Start_IT(&htim4);
 	    hlcd.hi2c    = &hi2c1;
 	    hlcd.address = LCD_ADDR_7BIT << 1;
 	    lcd_init(&hlcd);
 	    init_fsm();
 	    arm_rfft_fast_init_f32(&fft_instance, fft_size);
 	    frecuencia_generada = 1000;
+	    lcd_gotoxy(&hlcd, 0, 0);
+	    lcd_puts(&hlcd, "   LCD FUNCIONA   ");
+	    lcd_gotoxy(&hlcd, 0, 1);
+	    lcd_puts(&hlcd, " STM32 + I2C OK ");
+	    HAL_Delay(1500);
+	    init_fsm();
 
+
+	    HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+	    PWM_SetFrequency(1000);
+	    strcpy(current_mode_str, "ESPERA");
+	    mostrar_LCD();
 	}
 
 /* USER CODE END 0 */
@@ -259,42 +268,29 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
-  MX_ADC1_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   /* Initialize all configured peripherals */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+
+
   AD9833_Init(&hspi1);
-
-  HAL_Delay(100);
-
   I2C_Scanner();
   SPI_Debug_AD9833();
   System_Init();
 
-  lcd_gotoxy(&hlcd, 0, 0);
-  lcd_puts(&hlcd, "   LCD FUNCIONA   ");
-  lcd_gotoxy(&hlcd, 0, 1);
-  lcd_puts(&hlcd, " STM32 + I2C OK ");
-  HAL_Delay(1500);
 
-  strcpy(current_mode_str, "Sweep PWM");
-    frecuencia_generada = 1000.0f;
-    frecuencia_medida = 998.7f;
-    mostrar_LCD();
-    PWMSweep();
-    tx_head = tx_tail = 0;
-    tx_dma_busy = 0;
 
-    HAL_UART_Receive_DMA(&huart2, (uint8_t*)rx_buffer, sizeof(rx_buffer));
-  PWMSweep();
+  //current_event = EVENT_IMP_SWEEP_START;
+
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -305,14 +301,10 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-		if (current_event != EVENT_NONE){
-			state_machine_action(current_event);
-			current_event = EVENT_NONE;
-		}
-		if (HAL_GetTick() - last_lcd_update > 1000) {
-		    mostrar_LCD();
-		    last_lcd_update = HAL_GetTick();
-		}
+		  if (current_event != EVENT_NONE) {
+		         state_machine_action(current_event);
+		         current_event = EVENT_NONE;
+		     }
 
 	  }
   /* USER CODE END 3 */
@@ -362,67 +354,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
-
-  /* USER CODE BEGIN ADC1_Init 0 */
-
-  /* USER CODE END ADC1_Init 0 */
-
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC1_Init 1 */
-
-  /* USER CODE END ADC1_Init 1 */
-
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
-  hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_CC2;
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_0;
-  sConfig.Rank = 2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC1_Init 2 */
-
-  /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
@@ -633,6 +564,7 @@ static void MX_TIM3_Init(void)
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
 
   /* USER CODE BEGIN TIM3_Init 1 */
 
@@ -674,6 +606,25 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
+  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;
+  sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
+  sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sSlaveConfig.TriggerPrescaler = TIM_ICPSC_DIV1;
+  sSlaveConfig.TriggerFilter = 0;
+  if (HAL_TIM_SlaveConfigSynchro(&htim3, &sSlaveConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM3_Init 2 */
 	  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
   /* USER CODE END TIM3_Init 2 */
@@ -701,7 +652,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 84-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 10000-1;
+  htim4.Init.Period = 2000-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -753,28 +704,9 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
-
+  HAL_NVIC_SetPriority(USART2_IRQn, 2, 0); // Fija la prioridad a 2, como mencionaste
+  HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA2_CLK_ENABLE();
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
-  /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -832,132 +764,131 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
-	if(htim->Instance==TIM2){
-		HAL_GPIO_TogglePin(userLed_GPIO_Port,userLed_Pin);
-	}else if (htim->Instance==TIM3){
+	if (htim->Instance == TIM2) {
+	        HAL_GPIO_TogglePin(userLed_GPIO_Port, userLed_Pin);
+	    } else if (htim->Instance == TIM3) {
+	        counterOverflow++;
 
-		counterOverflow++;
-	}
+	        // Protección contra desbordamiento excesivo
+	        if (counterOverflow > 10) {
+	            HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_3);
+	            HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_4);
+	            is_capture_active = 0;
+	            current_event = EVENT_NONE;
+	        }
+	    }
 }
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart == &huart2) {
+	        // --- LINEA DE DEPURACION TEMPORAL ---
+	        HAL_UART_Transmit(&huart2, (uint8_t*)"[TxCplt]\r\n", 12,HAL_MAX_DELAY);
+	        // --- FIN LINEA DE DEPURACION ---
 
-	        uint16_t sent = tx_last_len;
-	        tx_tail = (tx_tail + sent) & (TX_BUFFER_SIZE-1);
+	        tx_tail = (tx_tail + tx_last_len) % TX_BUFFER_SIZE;
+	        tx_dma_busy = 0; // Marcar DMA libre
+
+	        // Si hay más datos pendientes, reiniciar transmisión
 	        if (tx_tail != tx_head) {
-	            // Enviar siguiente bloque contiguo
-	            uint16_t contig = (tx_head > tx_tail)
-	               ? (tx_head - tx_tail)
-	               : (TX_BUFFER_SIZE - tx_tail);
-	            HAL_UART_Transmit_DMA(&huart2, &tx_ring[tx_tail], contig);
-	        } else {
-	            tx_dma_busy = 0;  // Buffer vacío
+	            uint16_t remaining = (tx_head > tx_tail) ?
+	                               (tx_head - tx_tail) :
+	                               (TX_BUFFER_SIZE - tx_tail);
+	            tx_last_len = remaining;
+	            tx_dma_busy = 1;
+	            HAL_UART_Transmit_DMA(huart, &tx_ring[tx_tail], remaining);
 	        }
 	    }
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART2) {
+	        // Protección para evitar desbordamiento del buffer de recepción
+	        if (rx_index_simple >= sizeof(rx_buffer_simple) - 1) {
+	            rx_index_simple = 0;
+	            memset(rx_buffer_simple, 0, sizeof(rx_buffer_simple));
+	        }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-    if(huart->Instance == USART2){
+	        // Si se recibe el terminador '@'
+	        if (rx_char == '@') {
+	            rx_buffer_simple[rx_index_simple] = '\0'; // Terminar la cadena de recepción
 
+	            // Copiar de forma segura al buffer de comando global
+	            strncpy(command_buffer, rx_buffer_simple, sizeof(command_buffer) - 1);
+	            command_buffer[sizeof(command_buffer) - 1] = '\0';
 
-        if(rx_index < sizeof(rx_buffer)-1){
-            rx_buffer[rx_index++] = rx_char;
-        }
-        if (rx_char == '@') {
-            rx_buffer[rx_index] = '\0';
-            rx_index = 0;
-            current_event = EVENT_USART_COMMAND;
-        }
-        HAL_UART_Receive_IT(huart, &rx_char, 1);
-    }
+	            // *** LA CLAVE: SOLO ESTABLECE EL EVENTO PARA LA FSM ***
+	            current_event = EVENT_USART_COMMAND;
+
+	            // Reiniciar el buffer de recepción para el siguiente comando
+	            rx_index_simple = 0;
+	            memset(rx_buffer_simple, 0, sizeof(rx_buffer_simple));
+
+	        } else {
+	            // Si no es el final, solo almacena el carácter
+	            rx_buffer_simple[rx_index_simple++] = rx_char;
+	        }
+
+	        // Siempre reactivar la interrupción para el siguiente carácter
+	        HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+	    }
 }
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
-	// Salimos inmediatamente si la captura no está activa
-	if (!is_capture_active) {
-		return;
+    if (!is_capture_active) return;
+
+
+if (htim->Instance == TIM3) {
+	// flanco de referencia en CH3 (PC8)
+	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) {
+		ic_ref  = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
+		got_ref = 1;
+	}
+	// flanco de señal en CH4 (PC9)
+	else if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) {
+		ic_sig  = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
+		got_sig = 1;
 	}
 
-	if (htim->Instance == TIM3) {
-		// Variables estáticas para la medición de período
-		static uint32_t first_capture = 0;
-		uint32_t current_capture;
+	if (got_ref && got_sig) {
+		got_ref = got_sig = 0;
 
-		if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) { // Referencia (PC8)
-			current_capture = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
-			if (first_capture != 0) {
-				if (current_capture > first_capture) {
-					period_ticks = current_capture - first_capture;
-				} else { // Overflow del timer
-					period_ticks = (0xFFFF - first_capture) + current_capture + 1;
-				}
-				// Evitar división por cero si el período es inválido
-				if (period_ticks > 0) {
-					frecuencia_medida = 84000000.0f / period_ticks;
-				}
-			}
-			first_capture = current_capture;
-			capture_ch1 = current_capture;
-			capture_flags |= 1;
-		}
+		// 1) Calcular período en ticks
+		uint32_t period_ticks;
+		if (ic_ref >= last_ref)
+			period_ticks = ic_ref - last_ref;
+		else
+			period_ticks = (htim->Init.Period + 1 - last_ref) + ic_ref;
+		last_ref = ic_ref;
 
-		if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) { // Señal de retorno (PC9)
-			capture_ch2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
-			capture_flags |= 2;
-		}
+		// 2) Calcular frecuencia [Hz]
+		uint32_t timclk = HAL_RCC_GetPCLK1Freq() * 2;
+		float freq = (float)timclk / (htim->Init.Prescaler + 1) / period_ticks;
 
-		// Si tenemos una medición de período válida y ambas capturas
-		if (capture_flags == 3 && period_ticks > 0) {
-			uint8_t delta_ticks = capture_ch2 - capture_ch1;
-			if (delta_ticks < 0) {
-				delta_ticks += period_ticks;
-			}
-			float current_phase = ((float)delta_ticks / period_ticks) * 360.0f;
+		// 3) Calcular desfase [grados]
+		uint32_t diff_ticks;
+		if (ic_sig >= ic_ref)
+			diff_ticks = ic_sig - ic_ref;
+		else
+			diff_ticks = (htim->Init.Period + 1 - ic_ref) + ic_sig;
+		float phase_deg = ((float)diff_ticks / (float)period_ticks) * 360.0f;
 
-			// Almacenar en los buffers
-			if (capture_index < num_samples_to_capture) {
-				phase_results[capture_index] = current_phase;
-				frequency_results[capture_index] = frecuencia_medida;
-				capture_index++;
-			}
+		// 4) Guardar en tus arrays/resultados
+		frequency_results[capture_index] = freq;
+		phase_results    [capture_index] = phase_deg;
 
-			// Verificar si hemos terminado la captura
-			if (capture_index >= num_samples_to_capture) {
-				is_capture_active = 0; // Desactivar la captura
-				if (current_event == EVENT_NONE) {
-					current_event = EVENT_DATA_READY; // Notificar a la FSM
-				}
-			}
-
-			capture_flags = 0; // Resetear para la siguiente medición
-		}
-	}
-}
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    if (hadc->Instance == ADC1) {
-        uint16_t max1 = 0, max2 = 0;
-
-        // El buffer intercala los datos: [CH1_S1, CH2_S1, CH1_S2, CH2_S2, ...]
-        for (int i = 0; i < num_samples_to_capture * 2; i += 2) {
-            if (adc_dma_buffer[i] > max1) {
-                max1 = adc_dma_buffer[i]; // Muestra del Canal 1
-            }
-            if (adc_dma_buffer[i + 1] > max2) {
-                max2 = adc_dma_buffer[i + 1]; // Muestra del Canal 2
-            }
-        }
-
-        adc_max_ch1 = max1;
-        adc_max_ch2 = max2;
-
-        // Ahora puedes notificar a la FSM que los datos están listos
+		// 5) Actualizar variables globales para mostrar en el LCD
+		frecuencia_medida = freq;
+		fase_medida       = phase_deg;
+		if (current_event == EVENT_NONE) {
+		                 current_event = EVENT_DATA_READY;
+		            }
         is_capture_active = 0;
-        if (current_event == EVENT_NONE) {
-            current_event = EVENT_DATA_READY;
-        }
-    }
+        HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_3);
+        HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_4);
+
+	        }
+	    }
 }
+
 /**
  * @brief  Encola datos en el ring-buffer y dispara el DMA si está libre.
  * @param  data   puntero a los bytes a enviar
@@ -967,23 +898,36 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 
 int UART_DMA_Enqueue(UART_HandleTypeDef *huart,uint8_t *data, uint16_t length)
 {
-    uint16_t free_space = (tx_tail + TX_BUFFER_SIZE - tx_head - 1) & (TX_BUFFER_SIZE-1);
-    if (length > free_space) return -1;  // Buffer lleno
+	 uint16_t free_space;
+	    if (tx_head >= tx_tail) {
+	        free_space = TX_BUFFER_SIZE - tx_head - 1;
+	    } else {
+	        free_space = tx_tail - tx_head - 1;
+	    }
 
-    for (uint16_t i = 0; i < length; ++i) {
-        tx_ring[tx_head] = data[i];
-        tx_head = (tx_head + 1) & (TX_BUFFER_SIZE-1);
-    }
+	    // --- LINEA DE DEPURACION TEMPORAL ---
+	    char dbg_msg[64];
+	    snprintf(dbg_msg, sizeof(dbg_msg), "[DBG: Enqueue] Space=%u, Len=%u\r\n", free_space, length);
+	    HAL_UART_Transmit(&huart2, (uint8_t*)dbg_msg, strlen(dbg_msg), 100); // Bloqueante, solo para depuracion
+	    // --- FIN LINEA DE DEPURACION ---
 
-    if (!tx_dma_busy) {
-        uint16_t contiguous = (tx_head > tx_tail)
-            ? (tx_head - tx_tail)
-            : (TX_BUFFER_SIZE - tx_tail);
-        tx_last_len = contiguous;
-        tx_dma_busy = 1;
-        HAL_UART_Transmit_DMA(huart, &tx_ring[tx_tail], contiguous);
-    }
-    return 0;
+	    if (free_space < length) {
+	        return -1; // No hay espacio suficiente
+	    }
+	    // Copiar datos al ring buffer
+	    for (uint16_t i = 0; i < length; i++) {
+	        tx_ring[tx_head] = data[i];
+	        tx_head = (tx_head + 1) % TX_BUFFER_SIZE;
+	    }
+	    if (!tx_dma_busy) {
+	        tx_dma_busy = 1;
+	        uint16_t to_send = (tx_head >= tx_tail) ?
+	                          (tx_head - tx_tail) :
+	                          (TX_BUFFER_SIZE - tx_tail);
+	        tx_last_len = to_send;
+	        HAL_UART_Transmit_DMA(huart, &tx_ring[tx_tail], to_send);
+	    }
+	    return 0;
 }
 
 /* USER CODE END 4 */
