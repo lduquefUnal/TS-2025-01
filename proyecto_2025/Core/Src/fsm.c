@@ -1,247 +1,229 @@
 /*
  * fsm.c
  *
- *  Created on: Jul 4, 2025
- *      Author: luisduquefranco
+ * Created on: Jul 4, 2025
+ * Author: luisduquefranco
  */
-
 #include "main.h"
+#include "utils.h"
 #include "fsm.h"
 #include "i2c_lcd.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "AD9833.h"
-#include "utils.h"
+
+#include <math.h>
+
+#define SAMPLES_PER_STEP 5 // Promediar 10 mediciones por punto
+
+// --- Variables moved here for broader scope if needed, or keep static ---
+static uint8_t imp_sweep_index = 0;
+float   imp_sweep_ratio = 0;
+// Variables for averaging (used for both sweep steps and single measurement if averaging is desired)
+static uint16_t current_sample_count = 0;
+static float    accumulated_phase = 0.0f;
+static float    accumulated_freq = 0.0f;
+// -------------------------------------------------------------------------
 
 // ============================================================================
-// === VARIABLES EXTERNAS (Necesarias para que la FSM acceda a main.c) ========
+// === ESTRUCTURA DE CONFIGURACIÓN Y PARÁMETROS ===============================
 // ============================================================================
+ MeasurementConfig_t g_config;
+
+// ============================================================================
+// === VARIABLES DE ESTADO Y GLOBALES DEL MÓDULO ==============================
+// ============================================================================
+// --- Ensure these are declared appropriately, likely as extern in fsm.h if used elsewhere ---
+
+extern volatile e_PosiblesEvents current_event; // Assuming this is defined elsewhere
+// --- End of external assumptions ---
+
 static volatile e_PosiblesStates current_state = STATE_IDLE;
-static uint16_t print_index                = 0;
-
-static volatile uint32_t ic_ref, ic_sig, last_ref;
-static volatile uint8_t  got_ref, got_sig;
 volatile float frecuencia_medida = 0.0f;
 volatile float fase_medida       = 0.0f;
 
-#define IMP_SWEEP_STEPS   10
-#define IMP_SWEEP_START_HZ   10.0f
-#define IMP_SWEEP_END_HZ   100000.0f
-
-static float  imp_sweep_ratio;
-static uint8_t imp_sweep_index;
-static void send_status(void);
-
-#define IMP_SWEEP_STEPS   10
-#define IMP_SWEEP_START_HZ   10.0f
-#define IMP_SWEEP_END_HZ   100000.0f
-
-static float  imp_sweep_ratio;
-static uint8_t imp_sweep_index;
-static void send_status(void);
+// --- Remove duplicate declarations ---
+// static float   imp_sweep_ratio; // Already declared above
+// static uint8_t imp_sweep_index; // Already declared above
+// -------------------------------------------------------------------------
 
 // ============================================================================
-// === FUNCIONES ==============================================================
+// === DECLARACIONES DE FUNCIONES PRIVADAS ====================================
+// ============================================================================
+static void send_status(void);
+static void handle_uart_command(const char *cmd);
+static void send_sweep_point_json(uint8_t step, uint8_t total_steps, float freq, float phase);
+// --- Add declaration for LCD function if not in header ---
+void mostrar_LCD(void); // Assuming this is implemented elsewhere, declare if needed
+// --- Add declaration for measurement function ---
+void StartImpedanceMeasurement(uint32_t freq); // Assuming this is implemented elsewhere, declare if needed
+void PWM_SetFrequency(uint32_t freq);          // Assuming this is implemented elsewhere, declare if needed
+// -------------------------------------------------------------------------
+
+// ============================================================================
+// === IMPLEMENTACIÓN DE FUNCIONES PÚBLICAS ===================================
 // ============================================================================
 
-void mostrar_LCD(void) {
-    char linea[21];
-    float voltage_ch1, voltage_ch2;
-
-    voltage_ch1 = (adc_max_ch1 / 4095.0f) * 3.3f;
-    voltage_ch2 = (adc_max_ch2 / 4095.0f) * 3.3f;
-
-    lcd_clear(&hlcd);
-
-    snprintf(linea, sizeof(linea), "MODO: %s", current_mode_str);
-    lcd_gotoxy(&hlcd, 0, 0);
-    lcd_puts(&hlcd, linea);
-
-    lcd_gotoxy(&hlcd, 0, 1);
-    snprintf(linea, sizeof(linea), "F_GEN: %.1f Hz", frecuencia_generada);
-    lcd_puts(&hlcd, linea);
-
-    lcd_gotoxy(&hlcd, 0, 2);
-    snprintf(linea, sizeof(linea), "F_MED: %.1f Hz", frecuencia_medida);
-    lcd_puts(&hlcd, linea);
-
-    snprintf(linea, sizeof(linea), "V2:%.2fV P:%.1fdeg", voltage_ch2, fase_medida);
-    lcd_gotoxy(&hlcd, 0, 3);
-    lcd_puts  (&hlcd, linea);
+void init_fsm(void) {
+    // Valores por defecto al iniciar el sistema
+    g_config.samples = 512;
+    g_config.sweep_steps = 10;
+    g_config.sweep_fstart = 1000.0f;
+    g_config.sweep_fend = 100000.0f;
+    current_state = STATE_IDLE;
+    // El ratio se calcula una vez en init o cada vez que cambien las frecuencias/pasos
+    if (g_config.sweep_steps > 1) {
+        imp_sweep_ratio = powf(g_config.sweep_fend / g_config.sweep_fstart, 1.0f / (g_config.sweep_steps - 1));
+    } else {
+        imp_sweep_ratio = 1.0f; // Avoid division by zero
+    }
+    imp_sweep_index = 0;
+    current_sample_count = 0;
+    accumulated_phase = 0.0f;
+    accumulated_freq = 0.0f;
 }
 
+// Assuming mostrar_LCD is implemented elsewhere, kept for completeness
+
+
+e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
+    // Con el enfoque de funciones bloqueantes, la FSM solo tiene UNA tarea.
+    if (current_state == STATE_IDLE && event == EVENT_USART_COMMAND) {
+
+        // 1. Copiar y limpiar el buffer de comando
+        char cmd_copy[100];
+        strncpy(cmd_copy, (const char*)command_buffer, sizeof(cmd_copy) - 1);
+        cmd_copy[sizeof(cmd_copy) - 1] = '\0';
+        current_event = EVENT_NONE; // Consumir el evento inmediatamente
+        memset((void*)command_buffer, 0, sizeof(command_buffer));
+
+        // 2. Llamar al manejador que hace todo el trabajo pesado
+        if (strlen(cmd_copy) > 0) {
+            handle_uart_command(cmd_copy);
+        }
+    }
+
+    // La FSM nunca cambia de estado porque las funciones bloqueantes
+    // se encargan de todo el proceso de principio a fin antes de devolver el control.
+    return STATE_IDLE;
+}
+
+// ============================================================================
+// === IMPLEMENTACIÓN DE FUNCIONES PRIVADAS ===================================
+// ============================================================================
+
+/**
+ * @brief Procesa los comandos de texto recibidos por UART.
+ * @param cmd La cadena de texto del comando (sin el '@' final).
+ */
 static void handle_uart_command(const char *cmd) {
-    char local_buf[128];
-
-
-    uint32_t start = HAL_GetTick();
-    while (tx_dma_busy && (HAL_GetTick() - start) < 100) {
-        // Timeout de 100ms
-    }
-
-    snprintf(local_buf, sizeof(local_buf), "Comando recibido: %s\r\n", cmd);
-    if (HAL_UART_Transmit(&huart2, (uint8_t*)local_buf, strlen(local_buf), HAL_MAX_DELAY) != HAL_OK) {
-        // Error al encolar, limpiar buffer DMA
-        tx_head = tx_tail = 0;
-        tx_dma_busy = 0;
-    }
-
-    if (strncmp(cmd, "measure=", 8) == 0) {
-        uint32_t freq = atoi(cmd + 8);
-        if (freq > 0) {
-            strcpy(current_mode_str, "MIDIENDO");
-            snprintf(local_buf, sizeof(local_buf), "Iniciando medicion a %lu Hz...\r\n", freq);
-            HAL_UART_Transmit(&huart2, (uint8_t*)local_buf, strlen(local_buf), HAL_MAX_DELAY);
-            StartImpedanceMeasurement(freq);
-
-            fase_medida = 45.0f;         // Dato ficticio
+    char response_buf[128];
+    // --- Comando: Medición Única ("m <frecuencia>") ---
+    if (strncmp(cmd, "m ", 2) == 0) {
+        uint32_t freq = atoi(cmd + 2);
+        if (freq > 0 && freq <= 20000) { // Limita la frecuencia si es necesario
+            RunBlockingSingle(freq);
+        } else {
+             const char* invalid_freq_msg = "Error: Frecuencia invalida.\r\n";
+             HAL_UART_Transmit(&huart2, (uint8_t*)invalid_freq_msg, strlen(invalid_freq_msg), HAL_MAX_DELAY);
+             strcpy(current_mode_str, "ESPERA"); // Reset mode on error
              mostrar_LCD();
         }
     }
-    else if (strncmp(cmd, "samples=", 8) == 0) {
-        uint16_t size = atoi(cmd + 8);
-        if (size > 0 && size <= FFT_SIZE_MAX) {
-            num_samples_to_capture = size;
-            snprintf(local_buf, sizeof(local_buf), "Tamaño de muestra: %u\r\n", size);
-            HAL_UART_Transmit(&huart2, (uint8_t*)local_buf, strlen(local_buf), HAL_MAX_DELAY);
+    // --- Comando: Configurar Parámetros ("config <param> <valor>") ---
+    else if (strncmp(cmd, "config ", 7) == 0) {
+        char param[20];
+        char value_str[20];
+        // sscanf is ideal for parsear "palabra valor"
+        if (sscanf(cmd + 7, "%19s %19s", param, value_str) == 2) {
+            if (strcmp(param, "samples") == 0) {
+                const uint16_t valid_sizes[] = {256, 512, 1024, 2048, 4096};
+                int index = atoi(value_str);
+                if (index >= 0 && index < sizeof(valid_sizes)/sizeof(valid_sizes[0])) {
+                    g_config.samples = valid_sizes[index];
+                    snprintf(response_buf, sizeof(response_buf), "OK: Muestras -> %u\r\n", g_config.samples);
+                } else {
+                    snprintf(response_buf, sizeof(response_buf), "Error: Indice de muestras invalido (0-4).\r\n");
+                }
+            } else if (strcmp(param, "steps") == 0) {
+                int steps = atoi(value_str);
+                if (steps > 1 && steps <= 100) {
+                    g_config.sweep_steps = steps;
+                    // Recalculate ratio if needed immediately or let sweep start handle it
+                     if (g_config.sweep_steps > 1) {
+                         imp_sweep_ratio = powf(g_config.sweep_fend / g_config.sweep_fstart, 1.0f / (g_config.sweep_steps - 1));
+                     } else {
+                         imp_sweep_ratio = 1.0f;
+                     }
+                    snprintf(response_buf, sizeof(response_buf), "OK: Pasos del barrido -> %u\r\n", g_config.sweep_steps);
+                } else {
+                    snprintf(response_buf, sizeof(response_buf), "Error: Pasos invalidos (2-100).\r\n");
+                }
+            } else if (strcmp(param, "fstart") == 0) {
+                g_config.sweep_fstart = atof(value_str);
+                 if (g_config.sweep_steps > 1) {
+                     imp_sweep_ratio = powf(g_config.sweep_fend / g_config.sweep_fstart, 1.0f / (g_config.sweep_steps - 1));
+                 } else {
+                     imp_sweep_ratio = 1.0f;
+                 }
+                snprintf(response_buf, sizeof(response_buf), "OK: Frecuencia de inicio -> %.1f Hz\r\n", g_config.sweep_fstart);
+            } else if (strcmp(param, "fend") == 0) {
+                g_config.sweep_fend = atof(value_str);
+                 if (g_config.sweep_steps > 1) {
+                     imp_sweep_ratio = powf(g_config.sweep_fend / g_config.sweep_fstart, 1.0f / (g_config.sweep_steps - 1));
+                 } else {
+                     imp_sweep_ratio = 1.0f;
+                 }
+                snprintf(response_buf, sizeof(response_buf), "OK: Frecuencia final -> %.1f Hz\r\n", g_config.sweep_fend);
+            } else {
+                snprintf(response_buf, sizeof(response_buf), "Error: Parametro de 'config' desconocido.\r\n");
+            }
         } else {
-            snprintf(local_buf, sizeof(local_buf), "Tamaño invalido (1-%d)\r\n", FFT_SIZE_MAX);
-            HAL_UART_Transmit(&huart2, (uint8_t*)local_buf, strlen(local_buf), HAL_MAX_DELAY);
+            snprintf(response_buf, sizeof(response_buf), "Error: Formato 'config <param> <valor>' incorrecto.\r\n");
         }
+        HAL_UART_Transmit(&huart2, (uint8_t*)response_buf, strlen(response_buf), HAL_MAX_DELAY);
     }
-    else if (strcmp(cmd, "print_data") == 0) {
-        if (capture_index > 0) {
-            char buf[100];
-            float last_v1 = (adc_max_ch1 / 4095.0f) * 3.3f;
-            float last_v2 = (adc_max_ch2 / 4095.0f) * 3.3f;
-            float last_phase = phase_results[capture_index - 1];
-            float last_freq = frequency_results[capture_index - 1];
-
-            snprintf(buf, sizeof(buf), "%.2f,%.2f,%.2f,%.2f\r\n",
-                     last_freq,
-                     last_phase,
-                     last_v1,
-                     last_v2);
-            HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-        } else {
-            HAL_UART_Transmit(&huart2, (uint8_t*)"No hay datos capturados.\r\n", 28, HAL_MAX_DELAY);
-        }
+    // --- Comando: Iniciar Barrido de Impedancia ("sweep") ---
+    else if (strcmp(cmd, "sweep") == 0) {
+        char confirm[128]; // Increased buffer size slightly
+        snprintf(confirm, sizeof(confirm),
+                 "Iniciando barrido: %.1fHz a %.1fHz en %d pasos\r\n",
+                 g_config.sweep_fstart, g_config.sweep_fend, g_config.sweep_steps);
+        HAL_UART_Transmit(&huart2, (uint8_t*)confirm, strlen(confirm), HAL_MAX_DELAY);
+        // Signal the FSM to start the sweep (processed in STATE_IDLE)
+        RunBlockingSweep();
+        // Clear the command event
+        // current_event = EVENT_NONE; // Not needed here as it's set to IMP_SWEEP_START
     }
-    else if (strcmp(cmd, "help") == 0) {
-        const char *msg =
-            "\r\n--- Comandos Disponibles ---\r\n"
-            "measure=<Hz>@            : Inicia una medicion a la frecuencia dada\r\n"
-            "samples=<num>@           : Fija el numero de muestras a capturar\r\n"
-            "print_data@              : Imprime la ultima captura realizada\r\n"
-            "ad9833_mode=0@           : Cambia a seno (0=seno, 1=cuadrada, 2=triangular)\r\n"
-            "sweep_ad9833@            : Barrido de frecuencia con AD9833\r\n"
-            "sweep_pwm@               : Barrido de frecuencia PWM en PA9\r\n"
-            "status@                  : Información de interes\r\n"
-            "help@                    : Muestra esta ayuda\r\n";
-        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-    }
-    else if (strncmp(cmd, "ad9833_mode=", 13) == 0) {
-        int mode = atoi(cmd + 13);
-        if (mode >= 0 && mode <= 2) {
-            AD9833_SetWaveform((uint8_t)mode);
-            const char *modo_str[] = {"senoidal", "cuadrada", "triangular"};
-            snprintf(local_buf, sizeof(local_buf), "Modo AD9833 cambiado a %s (%d)\r\n", modo_str[mode], mode);
-            HAL_UART_Transmit(&huart2, (uint8_t*)local_buf, strlen(local_buf), HAL_MAX_DELAY);
-        } else {
-            HAL_UART_Transmit(&huart2, (uint8_t*)"Modo invalido (0=seno, 1=cuadrada, 2=triangular)\r\n", 51, HAL_MAX_DELAY);
-        }
-    }
-    else if (strcmp(cmd, "sweep_ad9833") == 0) {
-        strcpy(current_mode_str, "BARRIDO AD9833");
-        HAL_UART_Transmit(&huart2, (uint8_t*)"Barrido AD9833...\r\n", 20, HAL_MAX_DELAY);
-        LogSweep();
-        strcpy(current_mode_str, "ESPERA");
-    }
-    else if (strcmp(cmd, "sweep_pwm") == 0) {
-        strcpy(current_mode_str, "BARRIDO PWM");
-        HAL_UART_Transmit(&huart2, (uint8_t*)"Barrido PWM...\r\n", 16, HAL_MAX_DELAY);
-        PWMSweep();
-        strcpy(current_mode_str, "ESPERA");
-    }
-    else if (strcmp(cmd, "sweep_imp") == 0) {
-        current_event = EVENT_IMP_SWEEP_START;
-    }
+    // --- Comando: Obtener Estado del Sistema ("status") ---
     else if (strcmp(cmd, "status") == 0) {
         send_status();
     }
+    // --- Comando: Ayuda ("help") ---
+    else if (strcmp(cmd, "help") == 0) {
+        const char *msg =
+            "\r\n--- Comandos Disponibles ---\r\n"
+            "m <Hz>@            : Medicion unica a <Hz>.\r\n"
+            "sweep@             : Inicia barrido de impedancia.\r\n"
+            "config <p> <v>@    : Configura un parametro.\r\n"
+            "  p=samples, v=0-4 (256,512,1024,2048,4096)\r\n"
+            "  p=steps, v=2-100\r\n"
+            "  p=fstart, v=<Hz>\r\n"
+            "  p=fend, v=<Hz>\r\n"
+            "status@            : Muestra estado actual y config.\r\n"
+            "help@              : Muestra esta ayuda.\r\n";
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), UART_TIMEOUT_MS);
+    }
+    // --- Comando no reconocido ---
     else {
-        HAL_UART_Transmit(&huart2, (uint8_t*)"Comando no reconocido. Usa help@\r\n", 34, HAL_MAX_DELAY);
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Error: Comando no reconocido. Usa help@@\r\n", 42, HAL_MAX_DELAY);
+        strcpy(current_mode_str, "ESPERA"); // Reset mode on error
+        mostrar_LCD();
     }
 }
 
-void init_fsm(void) {
-    current_state = STATE_IDLE;
-    imp_sweep_ratio = powf(IMP_SWEEP_END_HZ/IMP_SWEEP_START_HZ,
-                           1.0f/(IMP_SWEEP_STEPS-1));
-    imp_sweep_index = 0;
-}
 
-e_PosiblesStates state_machine_action(e_PosiblesEvents event) {
-    switch (current_state) {
-        case STATE_IDLE:
-            if (event == EVENT_USART_COMMAND) {
-                // CAMBIO PRINCIPAL: Usar command_buffer en lugar de rx_buffer
-                char cmd_copy[100];
-                strncpy(cmd_copy, (char*)command_buffer, sizeof(cmd_copy));
-                current_event = EVENT_NONE;
-                memset((void*)command_buffer, 0, sizeof(command_buffer));
-
-                if (strlen(cmd_copy) > 0) {
-                    handle_uart_command(cmd_copy);
-                }
-            }
-            else if (event == EVENT_IMP_SWEEP_START) {
-                imp_sweep_index = 0;
-                strcpy(current_mode_str, "SWEEP IMP");
-                HAL_UART_Transmit(&huart2, (uint8_t*)"Iniciando sweep impedancia\r\n", 27, HAL_MAX_DELAY);
-                float f = IMP_SWEEP_START_HZ * powf(imp_sweep_ratio, (float)imp_sweep_index);
-                frecuencia_generada = f;
-                PWM_SetFrequency((uint32_t)f);
-                StartImpedanceMeasurement((uint32_t)f);
-                current_state = STATE_IMP_SWEEP_RUNNING;
-            }
-            break;
-
-        case STATE_IMP_SWEEP_RUNNING:
-            if (event == EVENT_DATA_READY) {
-                mostrar_LCD();
-                char buf[64];
-                int n = snprintf(buf, sizeof(buf),
-                        "Paso %u/%u: F:%.1fHz P:%.1fdeg\r\n",
-                        imp_sweep_index + 1, IMP_SWEEP_STEPS,
-                        frecuencia_medida, fase_medida);
-                HAL_UART_Transmit(&huart2, (uint8_t*)buf, n, HAL_MAX_DELAY);
-
-                imp_sweep_index++;
-
-                if (imp_sweep_index < IMP_SWEEP_STEPS) {
-                    float f2 = IMP_SWEEP_START_HZ * powf(imp_sweep_ratio, (float)imp_sweep_index);
-                    frecuencia_generada = f2;
-                    PWM_SetFrequency((uint32_t)f2);
-                    StartImpedanceMeasurement((uint32_t)f2);
-                } else {
-                    PWM_SetFrequency(1000);
-                    frecuencia_generada = 1000.0f;
-                    strcpy(current_mode_str, "ESPERA");
-                    HAL_UART_Transmit(&huart2, (uint8_t*)"Sweep finalizado\r\n", 19, HAL_MAX_DELAY);
-                    mostrar_LCD();
-                    current_state = STATE_IDLE;
-                }
-            }
-            break;
-
-        default:
-            current_state = STATE_IDLE;
-            break;
-    }
-    return current_state;
-}
 
 static void send_status(void) {
     char buf[256];
@@ -257,26 +239,30 @@ static void send_status(void) {
     // Lectura de registros de TIM3 (Input Capture)
     uint32_t ic_psc  = htim3.Instance->PSC;
     uint32_t ic_arr  = htim3.Instance->ARR;
-
+    // Ahora el status muestra los valores de la configuración global
     int len = snprintf(buf, sizeof(buf),
-        "\r\n--- STATUS SWEEP IMPEDANCIA ---\r\n"
+        "\r\n--- STATUS Y CONFIGURACION ---\r\n"
+        "--- Config ---\r\n"
         "Pasos sweep:    %u\r\n"
-        "Fstart:         %.1fHz  Fend: %.1fHz\r\n"
-        "Muestras:       %u\r\n"
-        "PWM (TIM1 CH1): PSC=%lu ARR=%lu → Fout≈%.1fHz\r\n"
-        "ADC trig (TIM2):PSC=%lu ARR=%lu\r\n"
-        "IC (TIM3):      PSC=%lu ARR=%lu\r\n"
-        "Última Fgen:    %.1fHz\r\n"
-        "Última Fmed:    %.1fHz P:%.1fdeg\r\n\r\n",
-        IMP_SWEEP_STEPS,
-        IMP_SWEEP_START_HZ, IMP_SWEEP_END_HZ,
-        num_samples_to_capture,
-        pwm_psc, pwm_arr, frecuencia_generada,
-        adc_psc, adc_arr,
-        ic_psc,  ic_arr,
+        "F. Inicio:      %.1f Hz\r\n"
+        "F. Fin:         %.1f Hz\r\n"
+        "Muestras/Punto: %u\r\n"
+        "--- Hardware ---\r\n"
+        "PWM (TIM1): PSC=%lu ARR=%lu\r\n"
+        "--- Ultima Medicion ---\r\n"
+        "F. Generada:    %.1f Hz\r\n"
+        "F. Medida:      %.1f Hz\r\n"
+        "Fase:           %.1f deg\r\n\r\n",
+        g_config.sweep_steps,
+        g_config.sweep_fstart,
+        g_config.sweep_fend,
+        g_config.samples,
+        pwm_psc, pwm_arr,
         frecuencia_generada,
         frecuencia_medida,
         fase_medida
     );
     HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, HAL_MAX_DELAY);
 }
+
+

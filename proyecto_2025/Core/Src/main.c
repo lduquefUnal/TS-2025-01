@@ -47,6 +47,8 @@ I2C_LCD_HandleTypeDef hlcd;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
@@ -68,12 +70,14 @@ volatile uint8_t   tx_dma_busy = 0;
 volatile uint16_t  tx_last_len = 0;
 uint32_t counterOverflow= 0;
 // ==== Muestreo / FFT ====
-volatile uint16_t num_samples_to_capture = 1024;
+volatile uint16_t num_samples_to_capture = 512;
 volatile uint16_t capture_index        = 0;
 uint16_t        adc_dma_buffer[FFT_SIZE_MAX * 2];
 volatile uint16_t adc_max_ch1 = 0, adc_max_ch2 = 0;
 volatile uint8_t  is_capture_active    = 0;
-
+static uint32_t start_tick = 0;
+volatile uint16_t cycle_count = 0;
+#define CYCLES_TO_MEASURE 10
 float     phase_results[FFT_SIZE_MAX];
 float     frequency_results[FFT_SIZE_MAX];
 volatile uint8_t command_ready_flag = 0;
@@ -129,6 +133,7 @@ static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void System_Init(void);
 
@@ -151,27 +156,7 @@ void System_Init(void);
 	    __HAL_TIM_SET_PRESCALER(&htim2, psc_value);
 	    __HAL_TIM_SET_AUTORELOAD(&htim2, arr_value);
 	}
-	void StartImpedanceMeasurement(uint32_t frequency) {
- // Detener y reiniciar timers
-	HAL_TIM_Base_Stop(&htim3);
-	HAL_TIM_IC_Stop(&htim3, TIM_CHANNEL_3);
-	HAL_TIM_IC_Stop(&htim3, TIM_CHANNEL_4);
 
-	__HAL_TIM_SET_COUNTER(&htim3, 0);
-	counterOverflow = 0;
-
-	// Configurar y arrancar timers
-	PWM_SetFrequency(frequency);
-	uint32_t adc_freq = frequency * 50;
-	ADC_Set_Sampling_Freq(adc_freq);
-
-	HAL_Delay(5); // Pequeña pausa para estabilización
-
-	// Iniciar captura
-	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3);
-	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_4);
-	is_capture_active = 1;
-	}
 	/**
 	  * @brief Ajusta la frecuencia de la señal PWM generada por TIM1.
 	  * @param freq_hz: Frecuencia deseada en Hertz.
@@ -207,6 +192,7 @@ void System_Init(void);
 
 	    // Actualiza la variable global para mostrarla en el LCD
 	    frecuencia_generada = (float)freq_hz;
+
 	}
 
 
@@ -275,6 +261,7 @@ int main(void)
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_TIM1_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   /* Initialize all configured peripherals */
 
@@ -354,6 +341,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -557,6 +596,8 @@ static void MX_TIM3_Init(void)
 {
 
   /* USER CODE BEGIN TIM3_Init 0 */
+  HAL_NVIC_SetPriority(TIM3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(TIM3_IRQn);
 	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3);
 	HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_4);
   /* USER CODE END TIM3_Init 0 */
@@ -626,7 +667,8 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
-	  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
+
+
   /* USER CODE END TIM3_Init 2 */
 
 }
@@ -768,14 +810,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	        HAL_GPIO_TogglePin(userLed_GPIO_Port, userLed_Pin);
 	    } else if (htim->Instance == TIM3) {
 	        counterOverflow++;
-
-	        // Protección contra desbordamiento excesivo
-	        if (counterOverflow > 10) {
-	            HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_3);
-	            HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_4);
-	            is_capture_active = 0;
-	            current_event = EVENT_NONE;
-	        }
 	    }
 }
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
@@ -831,104 +865,117 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	        HAL_UART_Receive_IT(&huart2, &rx_char, 1);
 	    }
 }
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
-{
-    if (!is_capture_active) return;
-
-
-if (htim->Instance == TIM3) {
-	// flanco de referencia en CH3 (PC8)
-	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) {
-		ic_ref  = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
-		got_ref = 1;
-	}
-	// flanco de señal en CH4 (PC9)
-	else if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) {
-		ic_sig  = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
-		got_sig = 1;
-	}
-
-	if (got_ref && got_sig) {
-		got_ref = got_sig = 0;
-
-		// 1) Calcular período en ticks
-		uint32_t period_ticks;
-		if (ic_ref >= last_ref)
-			period_ticks = ic_ref - last_ref;
-		else
-			period_ticks = (htim->Init.Period + 1 - last_ref) + ic_ref;
-		last_ref = ic_ref;
-
-		// 2) Calcular frecuencia [Hz]
-		uint32_t timclk = HAL_RCC_GetPCLK1Freq() * 2;
-		float freq = (float)timclk / (htim->Init.Prescaler + 1) / period_ticks;
-
-		// 3) Calcular desfase [grados]
-		uint32_t diff_ticks;
-		if (ic_sig >= ic_ref)
-			diff_ticks = ic_sig - ic_ref;
-		else
-			diff_ticks = (htim->Init.Period + 1 - ic_ref) + ic_sig;
-		float phase_deg = ((float)diff_ticks / (float)period_ticks) * 360.0f;
-
-		// 4) Guardar en tus arrays/resultados
-		frequency_results[capture_index] = freq;
-		phase_results    [capture_index] = phase_deg;
-
-		// 5) Actualizar variables globales para mostrar en el LCD
-		frecuencia_medida = freq;
-		fase_medida       = phase_deg;
-		if (current_event == EVENT_NONE) {
-		                 current_event = EVENT_DATA_READY;
-		            }
-        is_capture_active = 0;
-        HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_3);
-        HAL_TIM_IC_Stop_IT(&htim3, TIM_CHANNEL_4);
-
-	        }
-	    }
-}
-
 /**
- * @brief  Encola datos en el ring-buffer y dispara el DMA si está libre.
- * @param  data   puntero a los bytes a enviar
- * @param  length número de bytes
- * @retval 0=ok, -1=no hay espacio
- */
+  * @brief  Callback de interrupción para la Captura de Entrada (Input Capture).
+  * Esta función se llama cada vez que el timer detecta un flanco en un canal de IC.
+  * @param  htim: Puntero a la estructura del timer.
+  * @retval None
+  */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+    // 1. VERIFICACIÓN INICIAL
+    // Solo procesar si hay una medición activa. Esto evita ejecuciones accidentales.
+    if (!is_capture_active) {
+        return;
+    }
 
-int UART_DMA_Enqueue(UART_HandleTypeDef *huart,uint8_t *data, uint16_t length)
-{
-	 uint16_t free_space;
-	    if (tx_head >= tx_tail) {
-	        free_space = TX_BUFFER_SIZE - tx_head - 1;
-	    } else {
-	        free_space = tx_tail - tx_head - 1;
-	    }
+// Asegurarse de que la interrupción proviene del Timer 3.
+if (htim->Instance == TIM3) {
 
-	    // --- LINEA DE DEPURACION TEMPORAL ---
-	    char dbg_msg[64];
-	    snprintf(dbg_msg, sizeof(dbg_msg), "[DBG: Enqueue] Space=%u, Len=%u\r\n", free_space, length);
-	    HAL_UART_Transmit(&huart2, (uint8_t*)dbg_msg, strlen(dbg_msg), 100); // Bloqueante, solo para depuracion
-	    // --- FIN LINEA DE DEPURACION ---
+	// 2. CAPTURA DE LA SEÑAL DE FASE (CANAL 4)
+	// Se captura el tiempo de la señal que se desfasa.
+	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) {
+		// Solo nos interesa el primer flanco que llega después de iniciar la medición.
+		if (!got_sig) {
+			ic_sig = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
+			got_sig = 1; // Marcar que ya tenemos la captura de fase.
+		}
+	}
 
-	    if (free_space < length) {
-	        return -1; // No hay espacio suficiente
-	    }
-	    // Copiar datos al ring buffer
-	    for (uint16_t i = 0; i < length; i++) {
-	        tx_ring[tx_head] = data[i];
-	        tx_head = (tx_head + 1) % TX_BUFFER_SIZE;
-	    }
-	    if (!tx_dma_busy) {
-	        tx_dma_busy = 1;
-	        uint16_t to_send = (tx_head >= tx_tail) ?
-	                          (tx_head - tx_tail) :
-	                          (TX_BUFFER_SIZE - tx_tail);
-	        tx_last_len = to_send;
-	        HAL_UART_Transmit_DMA(huart, &tx_ring[tx_tail], to_send);
-	    }
-	    return 0;
+	// 3. CAPTURA DE LA SEÑAL DE REFERENCIA (CANAL 3)
+	// Usamos esta señal para medir la frecuencia y como referencia para la fase.
+	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) {
+
+		// 3.1. INICIO DE LA MEDICIÓN
+		// Si es el primer flanco (cycle_count es 0), guardamos el tiempo de inicio.
+		if (cycle_count == 0) {
+			start_tick = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
+			// Reiniciar contadores y flags para esta nueva medición.
+			counterOverflow = 0;
+			got_sig = 0;
+			cycle_count++; // Incrementar para esperar los siguientes flancos.
+
+		// 3.2. FIN DE LA MEDICIÓN
+		// Si ya no es el primer flanco, contamos hasta completar los ciclos necesarios.
+		} else {
+			cycle_count++;
+			// Cuando hemos capturado suficientes ciclos (ej. 10 flancos para 9 periodos).
+			if (cycle_count >= CYCLES_TO_MEASURE) {
+				uint32_t end_tick = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
+				uint32_t total_ticks;
+
+				// Calcular ticks totales, manejando el desbordamiento (overflow) del timer.
+				if (end_tick >= start_tick) {
+					total_ticks = (end_tick - start_tick) + (counterOverflow * (htim->Init.Period + 1));
+				} else {
+					total_ticks = (htim->Init.Period + 1 - start_tick) + end_tick + (counterOverflow * (htim->Init.Period + 1));
+				}
+
+				// Si la medición es válida, proceder con los cálculos.
+				if (total_ticks > 0) {
+					// Obtener la frecuencia del reloj del timer (considerando el prescaler).
+					uint32_t tim_prescaler = htim->Init.Prescaler;
+					uint32_t timclk = (HAL_RCC_GetPCLK1Freq() * 2) / (tim_prescaler + 1);
+
+					// Calcular el periodo promedio en ticks.
+					float avg_period_ticks = (float)total_ticks / (CYCLES_TO_MEASURE - 1);
+
+					// Calcular la frecuencia medida.
+					frecuencia_medida = (float)timclk / avg_period_ticks;
+
+					// Calcular el desfase.
+					if (got_sig) {
+						uint32_t diff_ticks;
+						if (ic_sig >= start_tick) { // Caso simple: captura en el mismo ciclo del timer.
+							diff_ticks = ic_sig - start_tick;
+						} else { // Caso complejo: hubo un overflow entre la referencia y la fase.
+							diff_ticks = (htim->Init.Period + 1 - start_tick) + ic_sig;
+						}
+						fase_medida = fmodf(((float)diff_ticks / avg_period_ticks) * 360.0f, 360.0f);
+					} else {
+						fase_medida = 0.0f; // No se detectó señal de fase.
+					}
+
+					// Guardar los resultados en los arrays.
+					if (capture_index < num_samples_to_capture) {
+						frequency_results[capture_index] = frecuencia_medida;
+						phase_results[capture_index] = fase_medida;
+						capture_index++;
+					}
+
+					// Indicar que los datos están listos y la medición ha terminado.
+					is_capture_active = 0;
+					current_event = EVENT_DATA_READY;
+				}
+
+				// Reiniciar el contador de ciclos para la próxima medición.
+				cycle_count = 0;
+			}
+		}
+	}
 }
+}
+
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+//{
+//    if (GPIO_Pin == userClk_Pin) {
+//        data_snapshot = HAL_GPIO_ReadPin(userData_GPIO_Port, userData_Pin);
+//        if (pending_event == IDLE)
+//            pending_event = EVENT_ENCODER;
+//    } else if (GPIO_Pin == userSw_Pin) {
+//        if (pending_event == IDLE)
+//            pending_event = EVENT_SW;
+//    }
+//}
 
 /* USER CODE END 4 */
 

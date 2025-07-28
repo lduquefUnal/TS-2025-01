@@ -48,6 +48,7 @@ typedef enum {
     STATE_UPDATE_LCD,
     STATE_PROCESS_DATA,
     STATE_IMP_SWEEP_RUNNING,
+	STATE_SINGLE_MEASUREMENT
 } e_PosiblesStates;
 
 /** FSM events */
@@ -58,10 +59,19 @@ typedef enum {
     EVENT_FFT_BUFFER_FULL,
     EVENT_DATA_READY,
     EVENT_PRINT_NEXT_DATA,
-	VENT_IMP_SWEEP_DONE,
+	EVENT_IMP_SWEEP_DONE,
 	EVENT_IMP_SWEEP_STEP,
 	EVENT_IMP_SWEEP_START,
+	EVENT_MEASUREMENT_TIMEOUT,
+	EVENT_SIMPLE_PWM_SWEEP_START
 } e_PosiblesEvents;
+
+typedef struct {
+    uint16_t samples;       // Número de muestras a capturar por punto
+    uint16_t sweep_steps;   // Pasos en el barrido de frecuencia
+    float    sweep_fstart;  // Frecuencia de inicio del barrido
+    float    sweep_fend;    // Frecuencia de fin del barrido
+} MeasurementConfig_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -70,10 +80,10 @@ typedef enum {
 #define TX_BUFFER_SIZE      256
 #define FREQ_BUFFER_SIZE    16
 #define SWEEP_STEPS         10
-#define FREQ_MIN_HZ         1.0f
+#define FREQ_MIN_HZ         100.0f
 #define FREQ_MAX_HZ         2500000UL
 #define FREQ_START          1000UL
-#define UART_TIMEOUT_MS 100
+#define UART_TIMEOUT_MS     1000
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
@@ -104,6 +114,8 @@ void     LogSweep(void);
 /* Private defines -----------------------------------------------------------*/
 #define userLed_Pin GPIO_PIN_1
 #define userLed_GPIO_Port GPIOH
+#define IMP_Pin GPIO_PIN_0
+#define IMP_GPIO_Port GPIOA
 #define USART_TX_Pin GPIO_PIN_2
 #define USART_TX_GPIO_Port GPIOA
 #define USART_RX_Pin GPIO_PIN_3
@@ -177,6 +189,14 @@ extern uint32_t counterOverflow;
 extern volatile uint8_t  capture_flags;
 extern volatile uint32_t capture_ch1;
 extern volatile uint32_t capture_ch2;
+extern volatile uint16_t cycle_count ;
+extern volatile uint32_t ic_ref     ;
+extern volatile uint32_t ic_sig      ;
+extern volatile uint32_t last_ref   ;
+extern volatile uint8_t  got_ref    ;
+extern volatile uint8_t  got_sig  ;
+extern MeasurementConfig_t g_config;
+extern float imp_sweep_ratio;
 
 /* USER CODE END Private defines */
 

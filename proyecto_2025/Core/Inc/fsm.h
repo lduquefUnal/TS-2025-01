@@ -17,6 +17,7 @@ extern "C" {
 
 /* USER CODE BEGIN Includes */
 #include "main.h"
+#include "utils.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN Prototypes */
