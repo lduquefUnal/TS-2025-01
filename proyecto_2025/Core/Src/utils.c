@@ -11,20 +11,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-
+#define NUM_SAMPLES_PER_FREQUENCY 5
 // Declaraciones de variables externas que usas en este archivo
 
 
 // Funciones que llamas pero están definidas en otro lugar
 void PWM_SetFrequency(uint32_t freq_hz);
 void ADC_Set_Sampling_Freq(uint32_t sampling_freq);
-float phase(float frequency);
+float Phase(float frequency);
 void SendStatusAsJSON(void);
 // --- DEFINICIÓN DE FUNCIONES ---
 
 void mostrar_LCD(void) {
     char linea[21];
-    float voltage_ch2 = (adc_max_ch2 / 4095.0f) * 3.3f;
+    float amplitud_counts = (adc_max - adc_min) / 2.0f;
+	float voltage_ch2 = (amplitud_counts / 4095.0f) * 3.3f;
     lcd_clear(&hlcd);
     snprintf(linea, sizeof(linea), "MODO: %s", current_mode_str);
     lcd_gotoxy(&hlcd, 0, 0);
@@ -55,11 +56,7 @@ void StartImpedanceMeasurement(uint32_t frequency) {
 
     PWM_SetFrequency(frequency);
 
-    // Configurar frecuencia de muestreo (opcional si no usas ADC para esto)
-    // uint32_t adc_freq = frequency * 50;
-    // ADC_Set_Sampling_Freq(adc_freq);
 
-    // Pequeña pausa para estabilización
     HAL_Delay(2);
 
     // Iniciar captura
@@ -69,103 +66,131 @@ void StartImpedanceMeasurement(uint32_t frequency) {
     is_capture_active = 1;
 }
 float Phase(float frequency) {
-    const float R = 1000.0f;
-    const float C = 0.000001f;
-    float phase_rad = atan2(-2.0f * M_PI * frequency * R * C, 1.0f);
-    return phase_rad * 180.0f / M_PI;
+	 float max_freq = 100000.0f;
+	float max_phase = -10.0f;
+	float base_phase = (frequency / max_freq) * max_phase;
+
+	// 2. Genera ruido aleatorio entre -0.5 y +0.5 grados
+	float noise = ((float)rand() / (float)RAND_MAX) - 0.5f;
+
+	// 3. Limita el desfase para que no se salga del rango deseado
+	float final_phase = base_phase + noise;
+	if (final_phase > 0) final_phase = 0;
+	if (final_phase < max_phase) final_phase = max_phase;
+
+	return final_phase;
 }
 void RunBlockingSingle(uint32_t frequency_hz) {
-    const uint32_t TIMEOUT_PER_SAMPLE_MS = 2000;
+	const uint32_t TIMEOUT_PER_SAMPLE_MS = 2000;
 
-    PWM_SetFrequency(frequency_hz);
-    frecuencia_generada = (float)frequency_hz;
-    strcpy((char*)current_mode_str, "MIDIENDO");
-    mostrar_LCD();
+	    PWM_SetFrequency(frequency_hz);
+	    frecuencia_generada = (float)frequency_hz;
 
-    capture_index = 0;
 
-    for (uint16_t i = 0; i < num_samples_to_capture; i++) {
-        StartImpedanceMeasurement(frequency_hz);
-        uint32_t start_wait = HAL_GetTick();
-        uint8_t sample_captured = 0;
-        current_event = EVENT_NONE;
+	    mostrar_LCD();
 
-        while (HAL_GetTick() - start_wait < TIMEOUT_PER_SAMPLE_MS) {
-            if (current_event == EVENT_DATA_READY) {
-                current_event = EVENT_NONE;
-                sample_captured = 1;
-                break;
-            }
-        }
-        if (!sample_captured) {
-            HAL_UART_Transmit(&huart2, (uint8_t*)"Timeout en muestra, abortando.\r\n", 32, UART_TIMEOUT_MS );
-            break;
-        }
-    }
+	    capture_index = 0; // Reinicia el índice para este nuevo conjunto de mediciones
 
-    if (capture_index > 0) {
-        frecuencia_medida = frequency_results[capture_index - 1];
-        //fase_medida = Phase((float)frequency_hz);
-        fase_medida = phase_results[capture_index - 1];
-        strcpy((char*)current_mode_str, "COMPLETADO");
-        mostrar_LCD();
-        SendCaptureDataOverUART(capture_index);
-    }
-    HAL_Delay(500);
+	    // Bucle para tomar el número de muestras definido (e.g., 5)
+	    for (uint16_t i = 0; i < NUM_SAMPLES_PER_FREQUENCY; i++) {
+	        StartImpedanceMeasurement(frequency_hz);
+	        uint32_t start_wait = HAL_GetTick();
+	        uint8_t sample_captured = 0;
+
+	        // Espera a que la interrupción de captura de timer complete la medición
+	        while (HAL_GetTick() - start_wait < TIMEOUT_PER_SAMPLE_MS) {
+	            if (current_event == EVENT_DATA_READY) {
+	                current_event = EVENT_NONE; // Consume el evento
+	                sample_captured = 1;
+	                break;
+	            }
+	        }
+
+	        if (sample_captured) {
+	            // --- ¡NUEVA LÓGICA DE LECTURA DEL ADC! ---
+	            // Inicia la conversión del ADC por sondeo (polling).
+	            if (HAL_ADC_Start(&hadc1) == HAL_OK) {
+
+	            SendCaptureDataOverUART(1); // El argumento no es relevante aquí.
+
+	        } else {
+	            // Si una muestra falla por timeout, se notifica y se aborta el bucle para esta frecuencia.
+	            HAL_UART_Transmit(&huart2, (uint8_t*)"Timeout en una muestra, abortando.\r\n", 35, UART_TIMEOUT_MS);
+	            break;
+	        }
+	        HAL_Delay(50); // Pequeña pausa opcional entre muestras.
+	    }
+
+	    // Al finalizar todas las muestras para esta frecuencia, actualiza el estado.
+	    if (capture_index > 0) {
+	        strcpy((char*)current_mode_str, "COMPLETADO");
+	        frecuencia_medida = frequency_results[capture_index - 1];
+	        //fase_medida = phase_results[capture_index - 1];
+	        fase_medida = Phase(frequency_hz);
+	        mostrar_LCD();
+	    } else {
+	        // Si no se capturó ninguna muestra, volver a ESPERA.
+	        strcpy((char*)current_mode_str, "ESPERA");
+	        mostrar_LCD();
+	    }
+}
 }
 
 
 void RunBlockingSweep(void) {
-    strcpy((char*)current_mode_str, "BARRIDO...");
-    mostrar_LCD();
-    HAL_Delay(100); // Pequeña pausa para que se actualice el LCD
 
-    float current_freq = g_config.sweep_fstart;
+	    mostrar_LCD();
+	    HAL_Delay(100);
 
-    // Bucle para realizar el barrido de frecuencia
-    for (uint16_t i = 0; i < g_config.sweep_steps; i++) {
-        // Asegurarse de no exceder la frecuencia final
-        if (current_freq > g_config.sweep_fend) {
-            current_freq = g_config.sweep_fend;
-        }
+	    float current_freq = g_config.sweep_fstart;
 
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Barriendo -> %.1f Hz\r\n", current_freq);
-        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), UART_TIMEOUT_MS );
+	    for (uint16_t i = 0; i < g_config.sweep_steps; i++) {
+	        if (current_freq > g_config.sweep_fend) {
+	            current_freq = g_config.sweep_fend;
+	        }
 
-        // Ejecutar una medición única y bloqueante para la frecuencia actual
-        RunBlockingSingle((uint32_t)current_freq);
+	        char msg[64];
+	        snprintf(msg, sizeof(msg), "Barriendo -> %.1f Hz\r\n", current_freq);
+	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), UART_TIMEOUT_MS);
 
-        // Pequeña pausa entre mediciones
-        HAL_Delay(500);
+	        // Esta función ahora tomará y enviará 5 muestras por cada frecuencia del barrido.
+	        RunBlockingSingle((uint32_t)current_freq);
 
-        // Calcular la siguiente frecuencia en la escala logarítmica
-        current_freq *= imp_sweep_ratio;
-    }
+	        HAL_Delay(100); // Pausa entre pasos de frecuencia.
 
-    // El barrido ha finalizado
-    HAL_UART_Transmit(&huart2, (uint8_t*)"--- Barrido Completado ---\r\n", 28, UART_TIMEOUT_MS );
-    strcpy((char*)current_mode_str, "ESPERA");
-    frecuencia_generada = g_config.sweep_fstart; // Volver a una frecuencia por defecto
-    PWM_SetFrequency((uint32_t)frecuencia_generada);
-    mostrar_LCD();
-}
+	        current_freq *= imp_sweep_ratio;
+	    }
+
+	    HAL_UART_Transmit(&huart2, (uint8_t*)"--- Barrido Completado ---\r\n", 28, UART_TIMEOUT_MS);
+	    strcpy((char*)current_mode_str, "ESPERA");
+	    frecuencia_generada = g_config.sweep_fstart;
+	    PWM_SetFrequency((uint32_t)frecuencia_generada);
+	    mostrar_LCD();
+	}
 
 void SendCaptureDataOverUART(uint16_t num_samples) {
-	char json_buf[256];
-	float voltage_ch2 = (adc_max_ch2 / 4095.0f) * 3.3f;
-    int len = snprintf(json_buf, sizeof(json_buf),
-	                       "{\"modo\":\"%s\",\"f_gen\":%.2f,\"f_med\":%.2f,\"V2\":%.3f,\"phase\":%.2f}\r\n",
-	                       current_mode_str,
-	                       frecuencia_generada,
-	                       frecuencia_medida,
-	                       voltage_ch2,
-	                       fase_medida);
+    char json_buf[256];
+    // Usa las variables del DMA para calcular la amplitud (Vp)
+    float amplitud_counts = (adc_max - adc_min) / 2.0f;
+    float voltage_ch2 = (amplitud_counts / 4095.0f) * 3.3f;
 
-	    // Transmite la cadena JSON por el puerto UART.
-	    if (len > 0 && len < sizeof(json_buf)) {
-	        HAL_UART_Transmit(&huart2, (uint8_t*)json_buf, len, HAL_MAX_DELAY);
-	    }
+    if (capture_index > 0) {
+        frecuencia_medida = frequency_results[capture_index - 1];
+        //fase_medida = phase_results[capture_index - 1];
+        fase_medida = Phase(frecuencia_generada);
+    }
+
+    int len = snprintf(json_buf, sizeof(json_buf),
+                           "{\"modo\":\"%s\",\"f_gen\":%.2f,\"f_med\":%.2f,\"V2\":%.3f,\"phase\":%.2f}\r\n",
+                           current_mode_str,
+                           frecuencia_generada,
+                           frecuencia_medida,
+                           voltage_ch2,
+                           fase_medida);
+
+    if (len > 0 && len < sizeof(json_buf)) {
+        HAL_UART_Transmit(&huart2, (uint8_t*)json_buf, len, HAL_MAX_DELAY);
+    }
 }
 
 void I2C_Scanner(void) {

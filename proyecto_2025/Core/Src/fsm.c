@@ -123,6 +123,7 @@ static void handle_uart_command(const char *cmd) {
     if (strncmp(cmd, "m ", 2) == 0) {
         uint32_t freq = atoi(cmd + 2);
         if (freq > 0 && freq <= 20000) { // Limita la frecuencia si es necesario
+        	strcpy((char*)current_mode_str, "simple");
             RunBlockingSingle(freq);
         } else {
              const char* invalid_freq_msg = "Error: Frecuencia invalida.\r\n";
@@ -190,13 +191,10 @@ static void handle_uart_command(const char *cmd) {
         snprintf(confirm, sizeof(confirm),
                  "Iniciando barrido: %.1fHz a %.1fHz en %d pasos\r\n",
                  g_config.sweep_fstart, g_config.sweep_fend, g_config.sweep_steps);
+        strcpy((char*)current_mode_str, "BARRIDO...");
         HAL_UART_Transmit(&huart2, (uint8_t*)confirm, strlen(confirm), HAL_MAX_DELAY);
-        // Signal the FSM to start the sweep (processed in STATE_IDLE)
         RunBlockingSweep();
-        // Clear the command event
-        // current_event = EVENT_NONE; // Not needed here as it's set to IMP_SWEEP_START
     }
-    // --- Comando: Obtener Estado del Sistema ("status") ---
     else if (strcmp(cmd, "status") == 0) {
         send_status();
     }

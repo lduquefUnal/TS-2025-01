@@ -145,7 +145,7 @@ extern TIM_HandleTypeDef    htim4;
 extern UART_HandleTypeDef   huart2;
 extern DMA_HandleTypeDef    hdma_usart2_tx;
 extern I2C_LCD_HandleTypeDef hlcd;
-
+extern ADC_HandleTypeDef    hadc1;
 /* === FSM / UART commands === */
 extern volatile e_PosiblesEvents current_event;
 extern char     rx_buffer[100];
@@ -177,7 +177,8 @@ extern uint8_t  freq_index;
 extern uint8_t  freq_full;
 extern uint32_t timer_clk;
 extern uint32_t last_lcd_update;
-
+extern volatile uint16_t adc_max ;
+extern volatile uint16_t adc_min ;
 /* === Generated / measured signals === */
 extern volatile float frecuencia_generada;
 extern volatile float frecuencia_medida;
