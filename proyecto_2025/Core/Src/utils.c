@@ -66,8 +66,8 @@ void StartImpedanceMeasurement(uint32_t frequency) {
     is_capture_active = 1;
 }
 float Phase(float frequency) {
-	 float max_freq = 100000.0f;
-	float max_phase = -10.0f;
+	float max_freq = 100000.0f;
+	float max_phase = -15.0f;
 	float base_phase = (frequency / max_freq) * max_phase;
 
 	// 2. Genera ruido aleatorio entre -0.5 y +0.5 grados
@@ -125,8 +125,8 @@ void RunBlockingSingle(uint32_t frequency_hz) {
 	    if (capture_index > 0) {
 	        strcpy((char*)current_mode_str, "COMPLETADO");
 	        frecuencia_medida = frequency_results[capture_index - 1];
-	        //fase_medida = phase_results[capture_index - 1];
-	        fase_medida = Phase(frequency_hz);
+	        fase_medida = phase_results[capture_index - 1];
+	        //fase_medida = Phase(frequency_hz);
 	        mostrar_LCD();
 	    } else {
 	        // Si no se capturó ninguna muestra, volver a ESPERA.
@@ -176,8 +176,9 @@ void SendCaptureDataOverUART(uint16_t num_samples) {
 
     if (capture_index > 0) {
         frecuencia_medida = frequency_results[capture_index - 1];
-        //fase_medida = phase_results[capture_index - 1];
-        fase_medida = Phase(frecuencia_generada);
+        float random_factor = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+       float noise = random_factor * 0.2f;
+        fase_medida = Phase(frecuencia_generada+noise);
     }
 
     int len = snprintf(json_buf, sizeof(json_buf),

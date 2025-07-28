@@ -170,7 +170,7 @@ void System_Init(void);
 	  * @retval None
 	  */
 	void PWM_SetFrequency(uint32_t freq_hz) {
-	    if (freq_hz == 0 || freq_hz > 100000) {
+	    if (freq_hz == 0 || freq_hz > 500000) {
 	        return;
 	    }
 

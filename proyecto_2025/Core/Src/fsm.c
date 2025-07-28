@@ -70,7 +70,7 @@ void init_fsm(void) {
     g_config.samples = 512;
     g_config.sweep_steps = 10;
     g_config.sweep_fstart = 1000.0f;
-    g_config.sweep_fend = 100000.0f;
+    g_config.sweep_fend = 500000.0f;
     current_state = STATE_IDLE;
     // El ratio se calcula una vez en init o cada vez que cambien las frecuencias/pasos
     if (g_config.sweep_steps > 1) {
@@ -122,7 +122,7 @@ static void handle_uart_command(const char *cmd) {
     // --- Comando: Medición Única ("m <frecuencia>") ---
     if (strncmp(cmd, "m ", 2) == 0) {
         uint32_t freq = atoi(cmd + 2);
-        if (freq > 0 && freq <= 20000) { // Limita la frecuencia si es necesario
+        if (freq > 0 && freq <= 500000) { // Limita la frecuencia si es necesario
         	strcpy((char*)current_mode_str, "simple");
             RunBlockingSingle(freq);
         } else {
